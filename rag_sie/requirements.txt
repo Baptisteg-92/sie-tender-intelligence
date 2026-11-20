@@ -1,0 +1,21 @@
+# Moteur RAG des archives SIE : pip install -r rag_sie/requirements.txt
+# Socle (poste de travail, démonstration, tests)
+numpy>=1.26
+pymupdf>=1.24
+python-docx>=1.1
+openpyxl>=3.1
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27            # client de test du service
+pytest>=8.0
+
+# Serveur SIE : base PostgreSQL + pgvector
+psycopg[binary]>=3.1
+
+# IA de rédaction par API (Bedrock ou Anthropic), utilisée seulement si SIE_LLM_EXTERNE_AUTORISE=oui
+anthropic[bedrock]>=2.12
+
+# Recherche par le sens en production (bge-m3, reclasseur) : environ 2 Go avec PyTorch pour processeur.
+# Sur le serveur : pip install --index-url https://download.pytorch.org/whl/cpu torch
+#                  pip install "sentence-transformers>=3.0"
+# Facultatif, meilleure lecture des PDF (titres, tableaux) : pip install docling   puis SIE_RAG_DOCLING=1

@@ -9,6 +9,7 @@ Contrôle & export, Paramètres. Un sélecteur commun (barre latérale) choisit 
 Variables d'environnement utiles :
     SIE_ESPACE        dossier des affaires (défaut : affaires) ; les référentiels sont dans <espace>/_referentiels.json
     SIE_INDEX         index des archives (défaut : archives_index.json)
+    SIE_RAG_URL       service RAG (rag_sie/) : s'il est défini, il remplace l'index local (voir sie_tender/rag_distant.py)
     SIE_LLM           aucun | ollama | anthropic : moteur IA proposé par défaut (voir sie_tender/llm.py)
     SIE_MOT_DE_PASSE  protège l'accès (obligatoire en ligne)
 """
@@ -120,6 +121,11 @@ def _bibliotheque(chemin: str, mtime: float) -> Bibliotheque | None:
 
 
 def biblio() -> Bibliotheque | None:
+    from sie_tender.rag_distant import BibliothequeRAG
+
+    distante = BibliothequeRAG.depuis_env()
+    if distante is not None:
+        return distante  # type: ignore[return-value]  (mêmes méthodes que Bibliotheque)
     return _bibliotheque(str(INDEX), _mtime(INDEX))
 
 

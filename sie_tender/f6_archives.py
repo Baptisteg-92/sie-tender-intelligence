@@ -344,9 +344,10 @@ def references_similaires(biblio: Bibliotheque | None, contexte: str, k: int = 3
 
     if biblio is None:
         return []
-    meta = {d.affaire: d.meta for d in biblio.documents}
+    similaires = biblio.affaires_similaires(contexte, k)
+    meta = {d.affaire: d.meta for d in biblio.documents}  # après la recherche : le service RAG les renseigne à ce moment
     out = []
-    for affaire, score in biblio.affaires_similaires(contexte, k):
+    for affaire, score in similaires:
         m = meta.get(affaire) or {}
         out.append(ReferenceProposee(affaire=affaire, score=score, activite=m.get("activite"), annee=m.get("annee"),
                                      type=m.get("type"), resultat=m.get("resultat")))
