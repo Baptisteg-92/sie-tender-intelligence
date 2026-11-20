@@ -13,3 +13,8 @@ exemples/archives_index.json
 exemples/affaires_demo/
 donnees_demo/
 /archives_index.json
+# Moteur RAG : index, état et journaux locaux, archives de démonstration générées
+rag_donnees/
+archives_demo/
+essai/
+jeu_evaluation_demo.json

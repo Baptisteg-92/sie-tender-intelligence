@@ -126,6 +126,14 @@ python -m sie_tender analyser chemin/vers/dce.zip --index archives_index.json --
 python -m sie_tender chercher "intervention en site occupé" --index archives_index.json
 ```
 
+## Moteur RAG des archives (noyau IA)
+
+Le dossier `rag_sie/` contient la recherche dans les archives de SIE et les brouillons de mémoire
+cités. Il est autonome : son propre README, ses tests, ses dépendances (`rag_sie/requirements.txt`).
+Il tourne comme un service HTTP interne sur le serveur SIE. Si `SIE_RAG_URL` est défini, l'outil
+l'interroge pour le mémoire technique (F6) à la place de l'index local par mots-clés.
+Voir [rag_sie/README.md](rag_sie/README.md).
+
 ## IA (facultative)
 
 L'outil fonctionne sans IA. Quand elle est activée, elle ajoute :
