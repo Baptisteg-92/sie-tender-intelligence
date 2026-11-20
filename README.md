@@ -16,11 +16,40 @@ Il couvre le parcours complet du cahier des charges, du dépôt du DCE au dossie
 | Modèle de données commun | | `sie_tender/models.py` |
 | Interface | | `app.py` (Streamlit) |
 
+## Organisation de l'interface (maquette V2)
+
+L'interface suit la maquette V2 réalisée par le groupe 2 avec SIE et le document « Spécifications fonctionnelles et techniques détaillées » du 10/11/2026. Un sélecteur commun dans la barre latérale choisit la consultation traitée ; toutes les rubriques travaillent sur elle, sans mélange entre dossiers.
+
+| Rubrique | Contenu |
+| --- | --- |
+| Tableau de bord | consultations actives, échéances, décisions en attente, alertes, devis attendus, DPGF et mémoires à finaliser, actions prioritaires avec lien direct |
+| Consultations | recherche, filtre par statut, responsable, archivage, accès aux étapes |
+| Chargement du DCE | dépôt manuel (fichiers, ZIP ou dossier du serveur SIE), inventaire des pièces, PDF de la fiche |
+| Analyse du DCE | registre de vigilance (priorité, source et page, action, responsable, échéance, statut, destination, « à intégrer au mémoire »), synthèse PDF, lots retenus, interfaces, exigences, critères, assistant IA |
+| Fiche de renseignement | rubriques du modèle SIE (dont architecte, coordonnateurs SPS et SSI, visite sur rendez-vous, fiche de visite signée), tous les lots, GO / NO GO par la direction avec historique, responsable de visite choisi dans le référentiel, PDF imprimable |
+| Décomptes & métrés | XLSX, XLS ou CSV ; choix de la feuille et des colonnes ; doublons, unités ambiguës, quantités manquantes ; plusieurs imports par lot, fichiers sources versionnés |
+| Demandes de prix | un fournisseur du référentiel, ses seuls articles, extrait du CCTP sur plusieurs plages de pages non contiguës, bordereau Excel, brouillon d'e-mail, suivi (brouillon, prêt, envoyé par SIE, relancé, réponse reçue) et versions |
+| Chiffrage / DPGF | devis rattachés aux demandes, comparatif par poste, **choix manuel** du fournisseur avec motif (jamais de moins-disant automatique), DPGF avec feuille « Suivi fournisseurs » |
+| Mémoire technique | choix « un mémoire commun » ou « un mémoire par lot », points de vigilance à intégrer, export Word par lot, bibliothèque des anciens mémoires (chemin UNC, synchronisation quotidienne et bouton « Synchroniser maintenant ») |
+| Documents | pièces de candidature et d'offre, reçues puis validées, rattachées à un fichier déposé |
+| Contrôle & export | anomalies bloquantes et à vérifier (dont alertes bloquantes non levées et livrables à revalider), validations technique / chiffrage / administrative, « prêt à déposer » impossible avec une anomalie bloquante sauf dérogation de la direction, ZIP par candidature / offre / lot |
+| Paramètres | fournisseurs et contacts (désactivés plutôt que supprimés), utilisateurs et rôles (sans mot de passe), personnes pour les visites |
+
+Les référentiels sont enregistrés dans `<espace>/_referentiels.json`, hors des dossiers d'affaires. Quand une donnée amont validée change (quantités, choix d'un fournisseur, points du registre), les livrables aval concernés sont signalés « à revalider ».
+
+### Synchronisation de la bibliothèque d'anciens mémoires
+
+```bash
+python -m sie_tender synchroniser --espace affaires --index archives_index.json
+```
+
+À planifier chaque nuit (02:00 par défaut) dans le planificateur de tâches du serveur SIE. Le chemin du partage, les sous-dossiers et la règle « mémoires validés » se règlent dans la rubrique Mémoire. Un verrou évite deux traitements simultanés ; sans changement sur le partage, rien n'est refait. Quand un fichier change, l'index par mots-clés est reconstruit en entier. Le moteur RAG du noyau IA est étudié à part.
+
 ## Règles de conception
 
 - **Rien n'est inventé.** Chaque information extraite porte sa source (fichier, page, article). Une donnée absente est marquée « à vérifier ».
 - **SIE décide.** GO / NO GO, lots retenus, fournisseurs, prix, temps de pose, frais, aléas et marges sont saisis par SIE. Sans ces coefficients, le prix de vente reste vide.
-- **Confidentialité.** Par défaut, aucun LLM n'est utilisé et tout tourne en local. Une API externe est bloquée tant que `SIE_LLM_EXTERNE_AUTORISE=oui` n'est pas défini, ce qui ne doit être fait qu'avec l'accord écrit de SIE. Aucun document SIE ne doit être ajouté à ce dépôt (voir `.gitignore`).
+- **Confidentialité.** L'application et ses données sont hébergées sur le serveur de SIE. SIE a validé l'usage d'un LLM par API (novembre 2026) : l'administrateur l'active sur le serveur avec `SIE_LLM_EXTERNE_AUTORISE=oui` et la clé d'API ; les pages utiles du DCE et des archives sont alors envoyées au fournisseur d'IA. Sans ce réglage, rien ne sort du serveur. Aucun document SIE ne doit être ajouté à ce dépôt (voir `.gitignore`).
 - **Rien n'est envoyé.** Les demandes de prix et le dossier final sont des fichiers à relire ; l'envoi et le dépôt restent manuels.
 
 ## Installation
@@ -49,7 +78,7 @@ python -m sie_tender indexer exemples/archives_fictives --index archives_index.j
 streamlit run app.py
 ```
 
-Puis dans le navigateur : « Affaires » pour déposer un DCE (ou créer une affaire de démonstration), puis les étapes 1 à 7 dans l'ordre. Chaque page propose l'étape suivante en bas.
+Puis dans le navigateur : « Chargement du DCE » pour déposer un DCE (ou « Consultations › Démonstration »), puis les rubriques dans l'ordre. Chaque page propose l'étape suivante en bas.
 
 Parcours prévu par le cahier des charges :
 
@@ -110,7 +139,7 @@ Chaque réponse cite les pages du DCE utilisées, et chaque citation est recherc
 | Moteur | Réglages (variables d'environnement ou secrets Streamlit) | À savoir |
 | --- | --- | --- |
 | Aucun (défaut) | — | règles uniquement |
-| Claude | `ANTHROPIC_API_KEY`, `SIE_LLM_EXTERNE_AUTORISE = "oui"`, `SIE_LLM = "anthropic"` ; facultatif : `SIE_LLM_MODELE` (défaut `claude-opus-5-5`), `SIE_LLM_EFFORT` (`low`, `medium`, `high`), `ANTHROPIC_WORKSPACE_ID` (si la clé n'est rattachée à aucun espace de travail) | service externe et payant (clé sur console.anthropic.com, facturée à part de l'abonnement Claude). Pour chaque affaire, l'utilisateur doit confirmer que le DCE est fictif, public ou couvert par un accord écrit de SIE. Coût estimé affiché après chaque réponse. |
+| Claude | `ANTHROPIC_API_KEY`, `SIE_LLM_EXTERNE_AUTORISE = "oui"`, `SIE_LLM = "anthropic"` ; facultatif : `SIE_LLM_MODELE` (défaut `claude-opus-5-5`), `SIE_LLM_EFFORT` (`low`, `medium`, `high`), `ANTHROPIC_WORKSPACE_ID` (si la clé n'est rattachée à aucun espace de travail) | API externe et payante, validée par SIE. Activée pour tout le serveur par l'administrateur. Coût estimé affiché après chaque réponse. |
 | Ollama | `SIE_LLM = "ollama"`, `SIE_LLM_MODELE` (ex. `mistral`) | gratuit, rien ne sort du poste ; version téléchargeable uniquement, PC avec 16 Go de RAM conseillés |
 
 Le moteur se choisit aussi dans la barre latérale (« Configurer l'IA ») parmi ceux qui sont disponibles.
@@ -122,4 +151,6 @@ Le moteur se choisit aussi dans la barre latérale (« Configurer l'IA ») parmi
 - L'association devis / postes est une proposition à valider ; la lecture des devis PDF ne gère que des lignes simples.
 - Le format de la fiche suit les champs du cahier des charges ; l'export au modèle SIE attend que SIE fournisse son fichier.
 - Le score de `scripts/evaluer.py` sur les DCE fictifs ne mesure rien de réel (les règles ont été écrites sur ces DCE). Il servira sur les consultations historiques de SIE, avec des attendus écrits à la main et gardés hors du dépôt.
-- Les rôles ne sont pas des comptes : chacun choisit son rôle dans la barre latérale. Une vraie authentification par utilisateur reste à faire si SIE l'utilise en production.
+- Les rôles ne sont pas des comptes : chacun choisit son rôle dans la barre latérale. Le référentiel des utilisateurs existe, mais l'authentification Windows / Active Directory reste à brancher en production.
+- Changer de consultation dans le sélecteur ne prévient pas des saisies non enregistrées : enregistrer avant de changer.
+- Les bibliothèques de l'interface sont celles de Streamlit, installées sur le serveur (pas de CDN).

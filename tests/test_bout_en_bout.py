@@ -17,7 +17,7 @@ from sie_tender.affaire import EspaceTravail  # noqa: E402
 from sie_tender.f1_fiche import construire_fiche  # noqa: E402
 from sie_tender.f3_quantites import importer_quantites  # noqa: E402
 from sie_tender.f4_cotations import generer_demandes  # noqa: E402
-from sie_tender.f5_dpgf import associer, construire_dpgf, importer_devis  # noqa: E402
+from sie_tender.f5_dpgf import associer, construire_dpgf, importer_devis, offres_par_poste, retenir  # noqa: E402
 from sie_tender.f6_archives import Bibliotheque  # noqa: E402
 from sie_tender.f7_controle import controler, exporter_dossier  # noqa: E402
 from sie_tender.ingestion import importer_dce  # noqa: E402
@@ -102,6 +102,11 @@ def test_f3_a_f7(donnees, tmp_path):
         d = importer_devis(donnees / "chiffrage_fictif" / f, lot="2")
         associer(c, d)
         c.devis.append(d)
+    c.dpgf = construire_dpgf(c)
+    led = next(p for p in c.dpgf if p.code == "2.1")
+    assert led.prix_materiel is None and "fournisseur à choisir" in " ".join(led.alertes)  # jamais de choix automatique
+    for qid, lst in offres_par_poste(c).items():  # choix de SIE simulé pour le test
+        retenir(c, qid, min(lst, key=lambda x: x[1].prix_unitaire)[0].id, motif="test", validateur="test")
     c.dpgf = construire_dpgf(c)
     led = next(p for p in c.dpgf if p.code == "2.1")
     assert led.prix_materiel == 39.9 and led.prix_unitaire_vente is None  # pas de coefficients SIE
