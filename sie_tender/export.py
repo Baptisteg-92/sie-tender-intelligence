@@ -1,7 +1,6 @@
 """Exports : JSON (format d'échange avec le groupe 2), Excel, Markdown et Word."""
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -14,6 +13,8 @@ LIBELLES = {
     "visite": "Visite", "visite_obligatoire": "Visite obligatoire", "contacts": "Contacts",
     "duree_validite_offres": "Délai de validité des offres",
     "intervenants": "Autres intervenants (BET, contrôle, SPS, OPC)",
+    "architecte": "Architecte", "coordonnateur_sps": "Coordonnateur SPS", "coordinateur_ssi": "Coordinateur SSI",
+    "visite_sur_rdv": "Visites individuelles sur rendez-vous", "fiche_visite_signee": "Fiche de visite signée à remettre",
 }
 STATUTS = {Statut.EXTRAIT: "extrait", Statut.A_VERIFIER: "À VÉRIFIER", Statut.CORRIGE: "corrigé par SIE", Statut.VALIDE: "validé"}
 
@@ -137,7 +138,8 @@ def exporter_markdown(c: Consultation, chemin: Path) -> None:
     chemin.write_text("\n".join(L), encoding="utf-8")
 
 
-def exporter_trame_docx(c: Consultation, chemin: Path) -> None:
+def exporter_trame_docx(c: Consultation, chemin: Path, lot: str | None = None) -> None:
+    """Mémoire commun (lot None) ou mémoire d'un lot (mode « par lot »)."""
     import docx
     from docx.shared import Pt, RGBColor
 
@@ -150,13 +152,15 @@ def exporter_trame_docx(c: Consultation, chemin: Path) -> None:
             r.font.color.rgb = couleur
 
     orange = RGBColor(0xC0, 0x50, 0x00)
-    d.add_heading(f"Mémoire technique : {c.fiche.objet.valeur or c.fiche.intitule.valeur or 'consultation'}", 0)
+    sections = sections_memoire(c, lot)
+    titre_lot = f" - lot {lot}" if lot else (f" - lots {', '.join(c.lots_memoire)}" if c.mode_memoire == "commun" and c.lots_memoire else "")
+    d.add_heading(f"Mémoire technique : {c.fiche.objet.valeur or c.fiche.intitule.valeur or 'consultation'}{titre_lot}", 0)
     plan = (f"Plan repris du cadre de réponse de l'acheteur ({ref(c.cadre_reponse)})." if c.cadre_reponse
             else "Plan construit à partir des critères de notation du RC.")
     p = d.add_paragraph("Projet généré par l'outil d'aide à la réponse. " + plan + " Chaque passage est une proposition à relire, "
                         "adapter et valider ; les sources sont indiquées entre crochets.")
     p.runs[0].italic = True
-    for s in c.trame_memoire:
+    for s in sections:
         titre = s.titre + (f" ({s.ponderation:g} %)" if s.ponderation else "")
         d.add_heading(titre, 2 if re.match(r"\d+\.\d", s.titre) else 1)
         if s.contenu:
@@ -170,6 +174,14 @@ def exporter_trame_docx(c: Consultation, chemin: Path) -> None:
         for pa in s.passages_proposes[:3]:
             d.add_paragraph(pa.texte)
             note(f"[Source : {ref(pa.source)}]")
+    vigilance = [a for a in c.registre if a.memoire and a.statut != "Sans objet" and (lot is None or a.lot in (None, lot))]
+    if vigilance:
+        d.add_heading("Points de vigilance à traiter dans ce mémoire", 1)
+        note("[À SUPPRIMER AVANT REMISE] Points du registre cochés « à intégrer au mémoire » : chacun doit être traité "
+             "dans les chapitres ci-dessus ou justifié.", orange, gras=True)
+        for a in vigilance:
+            src = f" [{a.source}{' p. ' + a.page if a.page else ''}]" if a.source else ""
+            d.add_paragraph(f"{a.intitule}{src} : {a.statut}" + (f" - {a.action}" if a.action else ""), style="List Bullet")
     refs = [r for r in c.references if r.retenue] or [r for r in c.references if r.retenue is None]
     if refs:
         d.add_heading("Références d'affaires comparables", 1)
@@ -183,6 +195,16 @@ def exporter_trame_docx(c: Consultation, chemin: Path) -> None:
         for f in c.pieces_jointes_memoire:
             d.add_paragraph(f, style="List Bullet")
     d.save(chemin)
+
+
+def sections_memoire(c: Consultation, lot: str | None = None) -> list:
+    """Sections d'un mémoire : en mode « par lot », celles du lot demandé ; sinon les communes puis celles de chaque lot."""
+    if c.mode_memoire == "par_lot" and lot is not None:
+        return [s for s in c.trame_memoire if s.lot == lot]
+    if c.mode_memoire == "par_lot":
+        return [s for s in c.trame_memoire if s.lot is not None]
+    communes = [s for s in c.trame_memoire if s.lot is None]
+    return communes + [s for s in c.trame_memoire if s.lot is not None]
 
 
 _A_COMPLETER = re.compile(r"\[À COMPLÉTER\s*:?\s*([^\]]*)\]")

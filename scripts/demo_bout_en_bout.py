@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sie_tender.affaire import EspaceTravail  # noqa: E402
 from sie_tender.f3_quantites import importer_quantites  # noqa: E402
 from sie_tender.f4_cotations import exporter_demandes, generer_demandes  # noqa: E402
-from sie_tender.f5_dpgf import associer, construire_dpgf, importer_devis  # noqa: E402
+from sie_tender.f5_dpgf import associer, construire_dpgf, importer_devis, offres_par_poste, retenir  # noqa: E402
 from sie_tender.f6_archives import Bibliotheque  # noqa: E402
 from sie_tender.f7_controle import controler, exporter_dossier  # noqa: E402
 from sie_tender.models import StatutSection  # noqa: E402
@@ -65,6 +65,9 @@ def main(racine: Path) -> None:
         print(f"[F5] {d.fournisseur} : {len(d.lignes)} lignes, {sum(1 for l in d.lignes if l.ligne_quantite_id)} associées")
     c.coefficients.taux_horaire, c.coefficients.frais_generaux = 52.0, 12.0   # saisis par SIE (simulation)
     c.coefficients.aleas, c.coefficients.marge = 3.0, 8.0
+    for qid, lst in offres_par_poste(c).items():  # choix de SIE simulé : l'offre la moins chère, motif noté
+        d, l = min(lst, key=lambda x: x[1].prix_unitaire)
+        retenir(c, qid, d.id, motif="démo : offre la moins chère, conformité à vérifier", validateur="démo")
     c.dpgf = construire_dpgf(c)
     print(f"[F5] DPGF : {len(c.dpgf)} postes, {sum(1 for p in c.dpgf if p.alertes)} avec alertes")
     for p in c.dpgf:

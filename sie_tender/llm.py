@@ -5,8 +5,8 @@ Trois moteurs, choisis par variables d'environnement (ou dans l'interface) :
     SIE_LLM=aucun        (défaut) extraction par règles seulement
     SIE_LLM=ollama       modèle local, rien ne sort de la machine
     SIE_LLM=anthropic    API Claude : exige SIE_LLM_EXTERNE_AUTORISE=oui et
-                         ANTHROPIC_API_KEY ; à n'utiliser que sur des DCE
-                         fictifs ou publics tant que SIE n'a pas donné son accord.
+                         ANTHROPIC_API_KEY ; usage par API validé par SIE
+                         (novembre 2026), activé par l'administrateur du serveur.
     SIE_LLM_MODELE=...   modèle (défaut : claude-opus-5-5 pour Claude, mistral pour Ollama)
     SIE_LLM_EFFORT=...   low | medium | high (Claude, défaut medium)
     SIE_OLLAMA_URL=...   défaut http://localhost:11434

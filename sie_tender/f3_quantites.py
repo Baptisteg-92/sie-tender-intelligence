@@ -67,30 +67,96 @@ def _colonnes(ligne: list) -> dict[str, int]:
     return cols
 
 
-def importer_quantites(chemin: str | Path, lot_defaut: str | None = None) -> tuple[list[LigneQuantite], list[str]]:
-    """Lit toutes les feuilles d'un classeur ; renvoie les lignes et un journal."""
-    from openpyxl import load_workbook
+UNITES_CONNUES = {"u", "ens", "ml", "m", "m2", "m3", "ft", "forfait", "kg", "h", "pm", "l", "t", "lot", "pce", "pc", "jour", "j"}
+_ALIAS_UNITES = {"unite": "u", "un": "u", "nb": "u", "ensemble": "ens", "f": "ft", "fft": "ft", "m²": "m2", "m³": "m3",
+                 "mètre": "m", "metre": "m", "ml.": "ml", "pièce": "pce", "piece": "pce"}
 
+
+def unite_normalisee(u: str | None) -> str | None:
+    if u is None:
+        return None
+    n = normaliser(str(u)).replace(" ", "").rstrip(".")
+    return _ALIAS_UNITES.get(n, n)
+
+
+def feuilles(chemin: str | Path) -> list[str]:
+    chemin = Path(chemin)
+    if chemin.suffix.lower() == ".csv":
+        return ["CSV"]
+    if chemin.suffix.lower() == ".xls":
+        import pandas as pd
+        return list(pd.ExcelFile(chemin).sheet_names)
+    from openpyxl import load_workbook
+    wb = load_workbook(chemin, read_only=True)
+    return [ws.title for ws in wb.worksheets]
+
+
+def _rangees(chemin: Path, feuille: str | None) -> list[tuple[str, list[list]]]:
+    """(nom de feuille, lignes) pour une feuille ou pour toutes. CSV : séparateur ; ou , détecté."""
+    suffixe = chemin.suffix.lower()
+    if suffixe == ".csv":
+        import csv
+        brut = chemin.read_bytes()
+        texte = next((brut.decode(enc) for enc in ("utf-8-sig", "cp1252", "latin-1") if _decodable(brut, enc)), "")
+        dialecte = csv.Sniffer().sniff(texte[:4000], delimiters=";,\t") if texte.strip() else csv.excel
+        return [("CSV", [list(r) for r in csv.reader(texte.splitlines(), dialecte)])]
+    if suffixe == ".xls":
+        import pandas as pd
+        xl = pd.ExcelFile(chemin)
+        noms = [feuille] if feuille else xl.sheet_names
+        return [(n, xl.parse(n, header=None).where(lambda d: d.notna(), None).values.tolist()) for n in noms]
+    from openpyxl import load_workbook
+    wb = load_workbook(chemin, data_only=True, read_only=True)
+    feuilles_ = [wb[feuille]] if feuille else wb.worksheets
+    return [(ws.title, [list(r) for r in ws.iter_rows(values_only=True)]) for ws in feuilles_]
+
+
+def _decodable(brut: bytes, enc: str) -> bool:
+    try:
+        brut.decode(enc)
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def apercu(chemin: str | Path, feuille: str | None = None) -> tuple[list[str], dict[str, int], int | None]:
+    """En-têtes trouvés, correspondance proposée (rôle -> n° de colonne) et ligne d'en-tête, pour l'écran de mappage."""
+    nom, rangees = _rangees(Path(chemin), feuille)[0]
+    for i, r in enumerate(rangees[:30]):
+        c = _colonnes(r)
+        if "designation" in c:
+            return [str(v) if v not in (None, "") else f"Colonne {k + 1}" for k, v in enumerate(r)], c, i
+    largeur = max((len(r) for r in rangees[:30]), default=0)
+    return [f"Colonne {k + 1}" for k in range(largeur)], {}, None
+
+
+def importer_quantites(chemin: str | Path, lot_defaut: str | None = None, feuille: str | None = None,
+                       colonnes: dict[str, int] | None = None, ligne_entete: int | None = None) -> tuple[list[LigneQuantite], list[str]]:
+    """Lit une feuille (ou toutes) d'un classeur XLSX/XLS ou d'un CSV ; renvoie les lignes et un journal.
+
+    colonnes : correspondance choisie par l'utilisateur (rôle -> n° de colonne), sinon détectée sur les en-têtes.
+    """
     chemin = Path(chemin)
     journal: list[str] = []
     lignes: list[LigneQuantite] = []
-    wb = load_workbook(chemin, data_only=True, read_only=True)
-    for ws in wb.worksheets:
-        rangees = list(ws.iter_rows(values_only=True))
+    for titre, rangees in _rangees(chemin, feuille):
         cols, debut = {}, None
-        for i, r in enumerate(rangees[:30]):
-            c = _colonnes(list(r))
-            if "designation" in c and "quantite" in c:
-                cols, debut = c, i + 1
-                break
-        if debut is None:
-            journal.append(f"F3 : feuille « {ws.title} » ignorée (pas d'en-tête Désignation / Quantité).")
+        if colonnes:
+            cols, debut = dict(colonnes), (ligne_entete + 1 if ligne_entete is not None else 0)
+        else:
+            for i, r in enumerate(rangees[:30]):
+                c = _colonnes(list(r))
+                if "designation" in c and "quantite" in c:
+                    cols, debut = c, i + 1
+                    break
+        if debut is None or "designation" not in cols or "quantite" not in cols:
+            journal.append(f"F3 : feuille « {titre} » ignorée (pas de colonnes Désignation / Quantité).")
             continue
-        m = re.search(r"lot\s*(\d{1,2})", normaliser(ws.title))
+        m = re.search(r"lot\s*(\d{1,2})", normaliser(titre))
         lot_feuille = str(int(m.group(1))) if m else lot_defaut
         famille_courante = None
         for j, r in enumerate(rangees[debut:], start=debut + 1):
-            r = list(r) + [None] * 10
+            r = list(r) + [None] * 20
             des = r[cols["designation"]]
             if des is None or not str(des).strip():
                 continue
@@ -107,21 +173,44 @@ def importer_quantites(chemin: str | Path, lot_defaut: str | None = None) -> tup
                 code=str(r[cols["code"]]).strip() if "code" in cols and r[cols["code"]] not in (None, "") else None,
                 famille=(str(r[cols["famille"]]).strip() if "famille" in cols and r[cols["famille"]] else None) or famille_courante or famille_de(des),
                 designation=des, unite=unite, quantite=qte,
-                source=SourceTableur(fichier=chemin.name, feuille=ws.title, ligne=j),
+                source=SourceTableur(fichier=chemin.name, feuille=titre, ligne=j),
             )
             problemes = []
             if qte is None:
-                problemes.append(f"quantité illisible « {qte_brute} »")
+                problemes.append(f"quantité illisible « {qte_brute} »" if qte_brute not in (None, "") else "quantité manquante")
             elif qte < 0:
                 problemes.append("quantité négative")
             elif qte == 0:
                 problemes.append("quantité nulle")
             if unite is None:
                 problemes.append("unité manquante")
+            elif unite_normalisee(unite) not in UNITES_CONNUES:
+                problemes.append(f"unité ambiguë « {unite} »")
             if problemes:
                 l.statut = Statut.A_VERIFIER
                 l.remarque = ", ".join(problemes)
             lignes.append(l)
+    _doublons(lignes)
     a_verif = sum(1 for l in lignes if l.statut == Statut.A_VERIFIER)
     journal.append(f"F3 : {len(lignes)} lignes importées depuis {chemin.name}, dont {a_verif} à vérifier.")
     return lignes, journal
+
+
+def _doublons(lignes: list[LigneQuantite]) -> None:
+    vus: dict[tuple, LigneQuantite] = {}
+    for l in lignes:
+        cle = (l.lot, l.code) if l.code else (l.lot, normaliser(l.designation), unite_normalisee(l.unite))
+        if cle in vus:
+            premier = vus[cle]
+            msg = f"doublon possible avec la ligne {premier.source.ligne if premier.source else '?'}"
+            l.statut = Statut.A_VERIFIER
+            l.remarque = f"{l.remarque}, {msg}" if l.remarque else msg
+        else:
+            vus[cle] = l
+
+
+def controler_metre(lignes: list[LigneQuantite]) -> dict[str, int]:
+    """Compte des anomalies, pour l'écran de prévisualisation."""
+    rem = [l.remarque or "" for l in lignes]
+    return {"doublons": sum("doublon" in r for r in rem), "unites": sum("unité" in r for r in rem),
+            "quantites": sum("quantité" in r for r in rem), "total": len(lignes)}

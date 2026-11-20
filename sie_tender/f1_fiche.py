@@ -26,7 +26,7 @@ _LIGNE = r"(?P<v>[^\n]{3,200})"
 
 MOTIFS: dict[str, list[re.Pattern]] = {
     "reference": [
-        re.compile(rf"(?:r[ée]f[ée]rence|n[°o]\s*de\s*(?:la\s*)?consultation|n[°o]\s*(?:du\s*)?march[ée]|march[ée]\s*n[°o])\s*(?:du marché|de la consultation)?\s*:?\s*(?P<v>[A-Z0-9][A-Z0-9_./\-]{{2,40}})", I),
+        re.compile(r"(?:r[ée]f[ée]rence|n[°o]\s*de\s*(?:la\s*)?consultation|n[°o]\s*(?:du\s*)?march[ée]|march[ée]\s*n[°o])\s*(?:du marché|de la consultation)?\s*:?\s*(?P<v>[A-Z0-9][A-Z0-9_./\-]{2,40})", I),
     ],
     "intitule": [
         re.compile(rf"^\s*(?:intitul[ée]\s*(?:de la consultation|du march[ée])?)\s*:\s*{_LIGNE}", I | re.M),
@@ -61,6 +61,15 @@ MOTIFS: dict[str, list[re.Pattern]] = {
     ],
     "contacts": [
         re.compile(r"(?P<v>[\w.+-]+@[\w-]+\.[\w.-]+)"),
+    ],
+    "architecte": [
+        re.compile(rf"^\s*(?:architecte|cabinet d'architecture)\s*(?:mandataire)?\s*(?:\([^)]*\))?\s*:\s*{_LIGNE}", I | re.M),
+    ],
+    "coordonnateur_sps": [
+        re.compile(rf"^\s*(?:coordonn?ateur (?:en mati[èe]re de )?(?:SPS|s[ée]curit[ée] et (?:de )?protection de la sant[ée])|CSPS)\s*(?:\([^)]*\))?\s*:\s*{_LIGNE}", I | re.M),
+    ],
+    "coordinateur_ssi": [
+        re.compile(rf"^\s*(?:coordonn?ateur|coordinateur)\s*(?:SSI|(?:du )?syst[èe]me de s[ée]curit[ée] incendie)\s*(?:\([^)]*\))?\s*:\s*{_LIGNE}", I | re.M),
     ],
     "duree_validite_offres": [
         re.compile(r"d[ée]lai de validit[ée] des offres[^.\n]{0,40}?(?P<v>\d{2,3}\s*jours)", I),
@@ -205,6 +214,13 @@ def construire_fiche(pieces: list[Piece], llm: ClientLLM | None = None, journal:
     if t_obl:
         fiche.visite_obligatoire = Champ(valeur="oui" if normaliser(t_obl.valeur) == "obligatoire" else "non",
                                          source=t_obl.source, statut=Statut.EXTRAIT)
+
+    t_rdv = premier(ordonnees, [re.compile(r"(?P<v>visites? (?:individuelles? )?(?:sur|par) rendez-vous)", I)])
+    if t_rdv:
+        fiche.visite_sur_rdv = Champ(valeur="oui", source=t_rdv.source, statut=Statut.EXTRAIT)
+    t_sig = premier(ordonnees, [re.compile(r"(?P<v>(?:attestation|certificat|fiche) de visite[^.\n]{0,80}(?:sign[ée]e?|jointe?|remise?|fournie?))", I)])
+    if t_sig:
+        fiche.fiche_visite_signee = Champ(valeur="oui", source=t_sig.source, statut=Statut.EXTRAIT)
 
     if fiche.intitule.statut == Statut.A_VERIFIER and fiche.objet.statut == Statut.EXTRAIT:
         fiche.intitule = fiche.objet.model_copy()
