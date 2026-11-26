@@ -41,7 +41,7 @@ $py = Join-Path $venv "Scripts\python.exe"
 & $py -m pip install --upgrade pip
 & $py -m pip install -r (Join-Path $code "rag_sie\requirements.txt")
 & $py -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-& $py -m pip install "sentence-transformers>=3.0" pywin32
+& $py -m pip install "sentence-transformers>=3.0" pywin32 docling
 
 Write-Host "3/5 Configuration"
 if (-not (Test-Path $config)) {

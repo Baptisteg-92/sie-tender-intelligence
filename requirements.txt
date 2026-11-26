@@ -1,11 +1,11 @@
 pydantic>=2.6
-pymupdf>=1.24
+pypdfium2>=4.30        # lecture rapide des PDF (Apache/BSD) ; Docling en priorité s'il est installé
 python-docx>=1.1
 openpyxl>=3.1
 rank-bm25>=0.2.2
 streamlit>=1.40
 pandas>=2.0
-reportlab>=4.0        # uniquement pour générer les données fictives
+reportlab>=4.0        # PDF imprimables (fiche, registre) et données fictives
 pytest>=8.0
 openai>=3.60           # IA OpenAI (choix SIE), désactivée par défaut (voir sie_tender/llm.py)
 anthropic>=2.1        # IA Claude, désactivée par défaut (voir sie_tender/llm.py)

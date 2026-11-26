@@ -21,7 +21,7 @@ partage Windows (lecture seule, compte de service)
         │  chaque nuit à 2 h, ou bouton « Synchroniser maintenant »
         ▼
 indexation.py   liste → fichiers nouveaux / modifiés / déplacés / supprimés → droits NTFS
-   lecture.py      PDF (texte natif, OCR Tesseract des scans), Word (titres stylés), Excel
+   lecture.py      PDF (Docling, sinon pypdfium2 + OCR Tesseract), Word (titres stylés), Excel
    exclusions.py   CV, pièces d'identité, paie, RH : jamais indexés ; prix : jamais envoyés
    metadonnees.py  affaire, année, type de document, activité (CFO, CFA, SSI…), type d'ouvrage, validé
    decoupage.py    sections par chapitre (« 3 Moyens > 3.2 Habilitations »), blocs d'environ 300 mots
@@ -109,8 +109,10 @@ document dont l'année (nom du dossier d'affaire ou `affaire.json`) est hors pé
    - pour l'ensemble des archives, il faut PostgreSQL 16 avec l'extension pgvector (≥ 0.6),
      et définir `SIE_RAG_BASE=postgresql://…`. Les tables, l'index HNSW et la configuration
      plein texte française (racines, accents ignorés) sont créés au premier lancement.
-4. **OCR** : installer Tesseract avec la langue `fra` pour les PDF scannés. Docling est
-   facultatif (`SIE_RAG_DOCLING=1`) : il repère mieux les titres et les tableaux.
+4. **Lecture des PDF et OCR** : `pip install docling`, plus Tesseract avec la langue `fra`.
+   Docling (MIT) lit les PDF en repérant titres et tableaux, et fait l'OCR des scans. Ses modèles se
+   téléchargent une fois sur un poste relié à Internet, comme bge-m3. Sans Docling, pypdfium2
+   (Apache/BSD) lit le texte et Tesseract les scans. PyMuPDF (AGPL) n'est plus utilisé.
 5. **Compte de service** : un compte AD en lecture seule sur le partage. Le service relève les
    ACL NTFS de chaque fichier, avec pywin32 si présent, sinon avec la commande `icacls`.
 6. **Synchronisation de nuit**, avec le planificateur de tâches Windows :

@@ -1223,9 +1223,8 @@ def page_demandes() -> None:
             pdf = a.dossier("dce") / source
         nb_pages = None
         if pdf:
-            import pymupdf
-            with pymupdf.open(pdf) as doc:
-                nb_pages = doc.page_count
+            from sie_tender.pdf import nb_pages as compter_pages
+            nb_pages = compter_pages(pdf)
         plages_txt = e2.text_input("Plages de pages", placeholder="12-15, 38-42", disabled=pdf is None,
                                    help=f"Le PDF compte {nb_pages} pages." if nb_pages else None)
         plages, erreurs = lire_plages(plages_txt, nb_pages) if pdf and plages_txt else ([], [])

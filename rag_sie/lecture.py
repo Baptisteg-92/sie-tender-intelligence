@@ -1,8 +1,7 @@
 """Lecture des fichiers d'archive : texte par page, titres repérés, OCR des scans.
 
-- PDF : texte natif avec PyMuPDF ; pages scannées passées à l'OCR Tesseract (langue fra) si installé.
-  Si Docling est installé et SIE_RAG_DOCLING=1, il est utilisé à la place : il reconnaît mieux
-  les titres et les tableaux des PDF (et fait lui-même l'OCR).
+- PDF : Docling (titres, tableaux, OCR) s'il est installé, sinon pypdfium2 pour le texte natif et Tesseract
+  (langue fra) pour les pages scannées. Voir pdf.py.
 - Word (.docx) : paragraphes avec leurs styles de titre.
 - Excel : une « page » par feuille, une ligne par rangée.
 - Texte / Markdown : tel quel.
@@ -31,44 +30,11 @@ class Lu:
         return any(t.strip() for _, t in self.pages)
 
 
-def _ocr_page(page) -> str | None:
-    if shutil.which("tesseract") is None:
-        return None
-    try:
-        tp = page.get_textpage_ocr(language="fra", dpi=300, full=True)
-        return page.get_text("text", textpage=tp)
-    except Exception:
-        return None
+def _pdf(chemin: Path) -> Lu:
+    from .pdf import lire_pdf
 
-
-def _pdf_pymupdf(chemin: Path) -> Lu:
-    import pymupdf
-
-    lu = Lu()
-    with pymupdf.open(chemin) as doc:
-        for i, page in enumerate(doc, start=1):
-            texte = page.get_text("text")
-            if len(texte.strip()) < 20 and page.get_images():
-                texte_ocr = _ocr_page(page)
-                if texte_ocr is None:
-                    lu.remarque = "pages scannées non lues : OCR indisponible (installer Tesseract + langue fra)"
-                else:
-                    texte, lu.ocr = texte_ocr, True
-            lu.pages.append((i, nettoyer(texte)))
-    return lu
-
-
-def _pdf_docling(chemin: Path) -> Lu | None:
-    try:
-        from docling.document_converter import DocumentConverter
-    except ImportError:
-        return None
-    try:
-        md = DocumentConverter().convert(str(chemin)).document.export_to_markdown()
-    except Exception:
-        return None
-    lignes = md.splitlines()
-    return Lu([(i // 60 + 1, nettoyer("\n".join(lignes[i:i + 60]))) for i in range(0, max(len(lignes), 1), 60)])
+    lues, remarque = lire_pdf(chemin)
+    return Lu([(n, nettoyer(t)) for n, t, _ in lues], ocr=any(o for _, _, o in lues), remarque=remarque)
 
 
 def _xlsx(chemin: Path) -> Lu:
@@ -85,11 +51,7 @@ def _xlsx(chemin: Path) -> Lu:
 def lire(chemin: Path) -> Lu:
     ext = chemin.suffix.lower()
     if ext == ".pdf":
-        if os.getenv("SIE_RAG_DOCLING") == "1":
-            lu = _pdf_docling(chemin)
-            if lu is not None and lu.lisible:
-                return lu
-        return _pdf_pymupdf(chemin)
+        return _pdf(chemin)
     if ext == ".docx":
         return Lu(lire_docx_titres(chemin))
     if ext in (".xlsx", ".xlsm"):

@@ -1,26 +1,16 @@
 """Documents imprimables (PDF) produits localement : fiche de renseignement, synthèse du registre de vigilance.
 
-Le PDF est construit avec PyMuPDF à partir d'un HTML simple : aucune bibliothèque ni service externe.
+Le PDF est construit avec ReportLab (licence BSD) à partir d'un HTML simple généré ici : aucun service externe.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from html import escape
 from pathlib import Path
 
 from .export import LIBELLES, ref
 from .models import Consultation, Statut
-
-CSS = """
-body {font-family: sans-serif; font-size: 9pt; color: #1b2733;}
-h1 {font-size: 15pt; color: #12385c; margin-bottom: 2pt;}
-h2 {font-size: 11pt; color: #12385c; margin-top: 10pt; margin-bottom: 3pt; border-bottom: 1px solid #9fb3c8;}
-p.petit {font-size: 7.5pt; color: #5b6b7b;}
-table {border-collapse: collapse; width: 100%;}
-td, th {border: 1px solid #b8c4d0; padding: 2pt 4pt; vertical-align: top; text-align: left;}
-th {background-color: #e8eef4;}
-.verif {color: #b45309; font-weight: bold;}
-"""
 
 SECTIONS_FICHE = [
     ("1. Identification de l'appel d'offres", ["intitule", "reference", "objet", "procedure"]),
@@ -31,21 +21,64 @@ SECTIONS_FICHE = [
 ]
 
 
-def _html_vers_pdf(html: str, chemin: Path) -> Path:
-    import pymupdf as fitz
+_SPANS = {"verif": ('<font color="#b45309"><b>', "</b></font>"), "petit": ('<font size="7.5" color="#5b6b7b">', "</font>")}
 
+
+def _en_ligne(html: str) -> str:
+    """Balises en ligne de notre HTML -> balisage ReportLab (<b>, <br/>, <font>)."""
+    def span(m):
+        debut, fin = _SPANS.get(m.group(1), ("", ""))
+        return f"{debut}{m.group(2)}{fin}"
+    return re.sub(r"<span class=['\"](\w+)['\"]>(.*?)</span>", span, html, flags=re.S).strip()
+
+
+def _html_vers_pdf(html: str, chemin: Path) -> Path:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    corps = ParagraphStyle("corps", fontName="Helvetica", fontSize=9, leading=11.5, textColor="#1b2733", spaceAfter=3)
+    styles = {"h1": ParagraphStyle("h1", parent=corps, fontName="Helvetica-Bold", fontSize=15, leading=18, textColor="#12385c"),
+              "h2": ParagraphStyle("h2", parent=corps, fontName="Helvetica-Bold", fontSize=11, leading=14, textColor="#12385c",
+                                   spaceBefore=8),
+              "petit": ParagraphStyle("petit", parent=corps, fontSize=7.5, leading=9.5, textColor="#5b6b7b"),
+              "cellule": ParagraphStyle("cellule", parent=corps, spaceAfter=0)}
+    elements = []
+    for m in re.finditer(r"<(h1|h2|p|table|ul)([^>]*)>(.*?)</\1>", html, flags=re.S):
+        balise, attrs, contenu = m.groups()
+        if balise == "table":
+            lignes, fusions = [], []
+            for i, tr in enumerate(re.findall(r"<tr>(.*?)</tr>", contenu, flags=re.S)):
+                ligne = []
+                for th, att, txt in re.findall(r"<(t[hd])([^>]*)>(.*?)</t[hd]>", tr, flags=re.S):
+                    texte = f"<b>{_en_ligne(txt)}</b>" if th == "th" else _en_ligne(txt)
+                    if "verif" in att:
+                        texte = f'<font color="#b45309"><b>{texte}</b></font>'
+                    ligne.append(Paragraph(texte, styles["cellule"]))
+                    n = re.search(r"colspan=['\"]?(\d+)", att)
+                    if n:
+                        fusions.append((len(ligne) - 1, i, len(ligne) - 2 + int(n.group(1)), i))
+                        ligne += [""] * (int(n.group(1)) - 1)
+                lignes.append(ligne)
+            if not lignes:
+                continue
+            largeur = max(len(l) for l in lignes)
+            lignes = [l + [""] * (largeur - len(l)) for l in lignes]
+            t = Table(lignes, repeatRows=1, hAlign="LEFT", colWidths=[(A4[0] - 72) / largeur] * largeur)
+            st = [("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#b8c4d0")), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                  ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef4"))]
+            st += [("SPAN", (a, b), (c, d)) for a, b, c, d in fusions]
+            t.setStyle(TableStyle(st))
+            elements += [t, Spacer(1, 4)]
+        elif balise == "ul":
+            items = [ListItem(Paragraph(_en_ligne(li), corps)) for li in re.findall(r"<li>(.*?)</li>", contenu, flags=re.S)]
+            elements.append(ListFlowable(items, bulletType="bullet", leftIndent=12))
+        else:
+            style = styles["petit"] if "petit" in attrs else styles.get(balise, corps)
+            elements.append(Paragraph(_en_ligne(contenu), style))
     chemin = Path(chemin)
-    story = fitz.Story(html=html, user_css=CSS)
-    redacteur = fitz.DocumentWriter(str(chemin))
-    page = fitz.paper_rect("a4")
-    zone = page + (36, 36, -36, -40)
-    plus = True
-    while plus:
-        dispositif = redacteur.begin_page(page)
-        plus, _ = story.place(zone)
-        story.draw(dispositif)
-        redacteur.end_page()
-    redacteur.close()
+    SimpleDocTemplate(str(chemin), pagesize=A4, leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=40).build(elements)
     return chemin
 
 

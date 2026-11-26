@@ -1,7 +1,7 @@
 # Moteur RAG des archives SIE : pip install -r rag_sie/requirements.txt
 # Socle (poste de travail, démonstration, tests)
 numpy>=1.26
-pymupdf>=1.24
+pypdfium2>=4.30        # lecture rapide des PDF (Apache/BSD) ; Docling en priorité s'il est installé
 python-docx>=1.1
 openpyxl>=3.1
 fastapi>=0.110
@@ -19,4 +19,5 @@ anthropic[bedrock]>=2.12  # Claude, pour la comparaison prévue par SIE
 # Recherche par le sens en production (bge-m3, reclasseur) : environ 2 Go avec PyTorch pour processeur.
 # Sur le serveur : pip install --index-url https://download.pytorch.org/whl/cpu torch
 #                  pip install "sentence-transformers>=3.0"
-# Facultatif, meilleure lecture des PDF (titres, tableaux) : pip install docling   puis SIE_RAG_DOCLING=1
+# Lecture des PDF sur le serveur : pip install docling   (titres, tableaux, OCR ; modèles à copier comme bge-m3).
+# Sans Docling, pypdfium2 + Tesseract prennent le relais. SIE_DOCLING=0 force la lecture rapide.

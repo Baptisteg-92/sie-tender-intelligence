@@ -145,14 +145,9 @@ def lire_plages(texte: str, nb_pages: int | None = None) -> tuple[list[tuple[int
 
 def extraire_pages(pdf: str | Path, plages: list[tuple[int, int]], sortie: str | Path) -> Path:
     """PDF ne contenant que les plages choisies, dans l'ordre saisi. Les autres pages ne sont pas transmises."""
-    import pymupdf as fitz
+    from .pdf import extraire_pages as extraire
 
-    sortie = Path(sortie)
-    with fitz.open(pdf) as src, fitz.open() as dst:
-        for debut, fin in plages:
-            dst.insert_pdf(src, from_page=debut - 1, to_page=min(fin, src.page_count) - 1)
-        dst.save(sortie)
-    return sortie
+    return extraire(pdf, plages, Path(sortie))
 
 
 def demande_fournisseur(c: Consultation, fournisseur, lignes_ids: list[str], contact=None, echeance: str | None = None,

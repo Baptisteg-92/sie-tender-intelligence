@@ -79,19 +79,20 @@ def test_metre_csv_mappage_et_doublons(tmp_path):
 
 
 def test_extrait_cctp_plages_non_contigues(donnees, tmp_path):
-    import pymupdf
+    from reportlab.pdfgen import canvas
 
+    from sie_tender.pdf import lire_pdf
     pdf = tmp_path / "cctp.pdf"
-    with pymupdf.open() as doc:
-        for i in range(1, 21):
-            doc.new_page().insert_text((72, 72), f"Page {i}")
-        doc.save(pdf)
+    cv = canvas.Canvas(str(pdf))
+    for i in range(1, 21):
+        cv.drawString(72, 720, f"Page {i}")
+        cv.showPage()
+    cv.save()
     plages, erreurs = lire_plages("3-4, 10, 18-19", 20)
     assert not erreurs and plages == [(3, 4), (10, 10), (18, 19)]
     assert lire_plages("5-2", 20)[1] and lire_plages("30", 20)[1]
     sortie = extraire_pages(pdf, plages, tmp_path / "extrait.pdf")
-    with pymupdf.open(sortie) as doc:
-        assert [p.get_text().strip() for p in doc] == ["Page 3", "Page 4", "Page 10", "Page 18", "Page 19"]
+    assert [t.strip() for _, t, _ in lire_pdf(sortie)[0]] == ["Page 3", "Page 4", "Page 10", "Page 18", "Page 19"]
 
 
 def test_demande_ciblee_par_fournisseur(affaire, donnees):

@@ -78,14 +78,13 @@ def _prix(s: str) -> float | None:
 
 
 def _lire_pdf(chemin: Path) -> list[LigneDevis]:
-    import pymupdf
+    from .pdf import lire_pdf
 
     out = []
-    with pymupdf.open(chemin) as doc:
-        for page in doc:
-            for m in _LIGNE_PDF.finditer(page.get_text("text")):
-                out.append(LigneDevis(designation=m.group("des").strip(), unite=m.group("u"),
-                                      quantite=_nombre(m.group("qte")), prix_unitaire=_prix(m.group("pu"))))
+    for _, texte, _ in lire_pdf(chemin)[0]:
+        for m in _LIGNE_PDF.finditer(texte):
+            out.append(LigneDevis(designation=m.group("des").strip(), unite=m.group("u"),
+                                  quantite=_nombre(m.group("qte")), prix_unitaire=_prix(m.group("pu"))))
     return out
 
 
