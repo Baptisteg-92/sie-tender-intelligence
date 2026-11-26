@@ -143,8 +143,11 @@ def lire_fichier(chemin: Path) -> Piece:
     return piece
 
 
-def importer_dce(chemin: str | Path) -> list[Piece]:
-    """Lit un dossier ou une archive ZIP de DCE et renvoie ses pièces classées."""
+def importer_dce(chemin: str | Path, avancement=None) -> list[Piece]:
+    """Lit un dossier ou une archive ZIP de DCE et renvoie ses pièces classées.
+
+    avancement(fraction, message), facultatif : appelé avant chaque fichier (fraction entre 0 et 1).
+    """
     chemin = Path(chemin)
     tmp = None
     if chemin.is_file() and chemin.suffix.lower() == ".zip":
@@ -160,7 +163,12 @@ def importer_dce(chemin: str | Path) -> list[Piece]:
         raise FileNotFoundError(chemin)
     try:
         fichiers = sorted(p for p in racine.rglob("*") if p.is_file() and not p.name.startswith((".", "~$")))
-        return [lire_fichier(f) for f in fichiers]
+        pieces = []
+        for i, f in enumerate(fichiers):
+            if avancement:
+                avancement(i / max(len(fichiers), 1), f"Lecture des pièces : {i + 1}/{len(fichiers)} ({f.name})")
+            pieces.append(lire_fichier(f))
+        return pieces
     finally:
         if tmp is not None:
             shutil.rmtree(tmp, ignore_errors=True)

@@ -91,3 +91,15 @@ def test_pdf_endommage_ne_bloque_pas_l_import(tmp_path):
     pieces = {p.fichier: p for p in importer_dce(tmp_path)}
     assert pieces["RC.txt"].lisible
     assert not pieces["CCTP_lot01.pdf"].lisible and "illisible" in pieces["CCTP_lot01.pdf"].remarque
+
+
+def test_avancement_de_l_analyse(tmp_path):
+    from sie_tender.llm import AucunLLM
+    from sie_tender.pipeline import analyser_dce
+    for nom in ("RC.txt", "CCAP.txt", "CCTP_lot01.txt"):
+        (tmp_path / nom).write_text(f"{nom}\nRéférence : X-1", encoding="utf-8")
+    vus = []
+    analyser_dce(tmp_path, llm=AucunLLM(), avancement=lambda f, m: vus.append((f, m)))
+    fractions = [f for f, _ in vus]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
+    assert any("3/3" in m for _, m in vus)
