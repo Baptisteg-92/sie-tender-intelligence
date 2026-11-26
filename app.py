@@ -10,7 +10,7 @@ Variables d'environnement utiles :
     SIE_ESPACE        dossier des affaires (défaut : affaires) ; les référentiels sont dans <espace>/_referentiels.json
     SIE_INDEX         index des archives (défaut : archives_index.json)
     SIE_RAG_URL       service RAG (rag_sie/) : s'il est défini, il remplace l'index local (voir sie_tender/rag_distant.py)
-    SIE_LLM           aucun | ollama | anthropic : moteur IA proposé par défaut (voir sie_tender/llm.py)
+    SIE_LLM           aucun | openai | ollama | anthropic : moteur IA proposé par défaut (voir sie_tender/llm.py)
     SIE_MOT_DE_PASSE  protège l'accès (obligatoire en ligne)
 """
 from __future__ import annotations
@@ -342,7 +342,7 @@ def creer_affaire(fichiers: list[tuple[str, bytes]]) -> None:
 
 
 # --- IA -----------------------------------------------------------------------------------
-NOMS_MOTEURS = {"aucun": "Sans IA (règles seules)", "anthropic": "Claude (API, accord SIE)", "ollama": "Modèle local (Ollama)"}
+NOMS_MOTEURS = {"aucun": "Sans IA (règles seules)", "openai": "OpenAI (API, accord SIE)", "anthropic": "Claude (API, accord SIE)", "ollama": "Modèle local (Ollama)"}
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -367,7 +367,7 @@ def moteur_pour(a: Affaire):
         st.info("L'IA est désactivée. Les règles d'extraction fonctionnent sans elle. Pour l'activer, voir « Configurer l'IA » "
                 "dans la barre latérale.", icon=":material/info:")
         return None
-    if choix == "anthropic" and not externe_autorise():
+    if choix in ("anthropic", "openai") and not externe_autorise():
         st.warning("API non autorisée sur ce serveur (SIE_LLM_EXTERNE_AUTORISE).", icon=":material/shield:")
         return None
     try:
@@ -1933,9 +1933,9 @@ with st.sidebar:
     with st.expander("Configurer l'IA", icon=":material/auto_awesome:"):
         dispo = _moteurs()
         st.radio("Moteur", dispo, format_func=lambda m: NOMS_MOTEURS.get(m, m), key="moteur", index=dispo.index(moteur_choisi()))
-        if "anthropic" not in dispo:
-            st.caption("LLM par API (accord SIE) : l'administrateur renseigne ANTHROPIC_API_KEY et SIE_LLM_EXTERNE_AUTORISE=oui "
-                       "sur le serveur.")
+        if "openai" not in dispo and "anthropic" not in dispo:
+            st.caption("LLM par API (accord SIE) : l'administrateur renseigne OPENAI_API_KEY (ou ANTHROPIC_API_KEY) et "
+                       "SIE_LLM_EXTERNE_AUTORISE=oui sur le serveur.")
         else:
             st.caption("API activée sur ce serveur : les pages utiles du DCE et des archives sont envoyées au fournisseur d'IA.")
         if "ollama" not in dispo:

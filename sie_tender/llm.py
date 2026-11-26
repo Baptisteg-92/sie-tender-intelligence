@@ -1,13 +1,15 @@
 """Adaptateur IA : le reste du code ne connaît que `ClientLLM`.
 
-Trois moteurs, choisis par variables d'environnement (ou dans l'interface) :
+Quatre moteurs, choisis par variables d'environnement (ou dans l'interface) :
 
     SIE_LLM=aucun        (défaut) extraction par règles seulement
     SIE_LLM=ollama       modèle local, rien ne sort de la machine
+    SIE_LLM=openai       API OpenAI (choix de SIE, 26/11/2026) : exige SIE_LLM_EXTERNE_AUTORISE=oui et
+                         OPENAI_API_KEY ; SIE_OPENAI_URL=https://eu.api.openai.com/v1 si projet « Europe »
     SIE_LLM=anthropic    API Claude : exige SIE_LLM_EXTERNE_AUTORISE=oui et
                          ANTHROPIC_API_KEY ; usage par API validé par SIE
                          (novembre 2026), activé par l'administrateur du serveur.
-    SIE_LLM_MODELE=...   modèle (défaut : claude-opus-5-5 pour Claude, mistral pour Ollama)
+    SIE_LLM_MODELE=...   modèle (défaut : gpt-6.2-sol pour OpenAI, claude-opus-5-5 pour Claude, mistral pour Ollama)
     SIE_LLM_EFFORT=...   low | medium | high (Claude, défaut medium)
     SIE_OLLAMA_URL=...   défaut http://localhost:11434
     ANTHROPIC_WORKSPACE_ID=wrkspc_...  si la clé n'est rattachée à aucun espace de travail
@@ -28,7 +30,8 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 # Tarifs publics de l'API en dollars par million de jetons (entrée, sortie), pour l'estimation affichée.
-TARIFS = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50)}
+TARIFS = {"gpt-6.2-sol": (2.0, 10.0), "gpt-6.2-astra": (8.0, 40.0), "gpt-6.1-terra": (1.0, 5.0),
+          "claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50)}
 
 
 @dataclass
@@ -251,13 +254,105 @@ class AnthropicLLM:
         return Reponse("".join(morceaux).strip(), cites, cout_usd=self.cout(rep.usage))
 
 
+class OpenAILLM:
+    """API OpenAI (Responses). Citations : sortie JSON imposée par un schéma, extraits revérifiés par l'appelant."""
+    externe = True
+    contexte_max = 400_000  # caractères
+
+    SCHEMA_CITE = {"type": "object", "additionalProperties": False, "required": ["reponse", "citations"],
+                   "properties": {"reponse": {"type": "string"}, "citations": {"type": "array", "items": {
+                       "type": "object", "additionalProperties": False, "required": ["page", "extrait"],
+                       "properties": {"page": {"type": "integer"}, "extrait": {"type": "string"}}}}}}
+
+    def __init__(self, modele: str | None = None, client: Any = None):
+        if not externe_autorise():
+            raise PermissionError(
+                "API externe bloquée : définir SIE_LLM_EXTERNE_AUTORISE=oui uniquement "
+                "avec l'accord écrit de SIE ou pour des documents fictifs ou publics."
+            )
+        if client is None:
+            from openai import OpenAI
+            client = OpenAI(base_url=os.getenv("SIE_OPENAI_URL") or None, timeout=600, max_retries=2)
+        self.client = client
+        self.modele = modele or os.getenv("SIE_LLM_MODELE", "gpt-6.2-sol")
+        self.effort = os.getenv("SIE_LLM_EFFORT", "medium")
+        self.nom = f"openai:{self.modele}"
+
+    def cout(self, usage: Any) -> float:
+        if usage is None:
+            return 0.0
+        e, s = TARIFS.get(self.modele, (2.0, 10.0))
+        d = getattr(usage, "input_tokens_details", None)
+        cache = (getattr(d, "cached_tokens", 0) or 0) if d else 0
+        entree = (getattr(usage, "input_tokens", 0) or 0) - cache + 0.1 * cache
+        return (entree * e + (getattr(usage, "output_tokens", 0) or 0) * s) / 1_000_000
+
+    def _appel(self, consigne: str, contenu: str, schema: dict | None, max_tokens: int = 16000) -> tuple[Any, Reponse | None]:
+        args = dict(model=self.modele, instructions=consigne, input=contenu, reasoning={"effort": self.effort},
+                    max_output_tokens=max_tokens, store=False)
+        if schema:
+            args["text"] = {"format": {"type": "json_schema", "name": "reponse", "schema": schema, "strict": True}}
+        try:
+            rep = self.client.responses.create(**args)
+        except Exception as e:
+            nom = type(e).__name__
+            msg = {"AuthenticationError": "clé API invalide ou absente (OPENAI_API_KEY)",
+                   "PermissionDeniedError": "la clé API n'a pas accès à ce modèle",
+                   "RateLimitError": "trop de requêtes ou crédit API épuisé, réessayer plus tard",
+                   "APIConnectionError": "connexion à l'API impossible",
+                   "NotFoundError": f"modèle « {self.modele} » introuvable"}.get(nom, f"{nom} {str(e)[:300]}")
+            return None, Reponse("", erreur=f"Appel à OpenAI impossible : {msg}.")
+        for item in getattr(rep, "output", None) or []:
+            for c in getattr(item, "content", None) or []:
+                if getattr(c, "type", "") == "refusal":
+                    return rep, Reponse("", cout_usd=self.cout(rep.usage), erreur="OpenAI a refusé de répondre à cette demande.")
+        return rep, None
+
+    def json(self, consigne: str, contenu: str) -> dict[str, Any] | None:
+        rep, err = self._appel(consigne + "\nRéponds uniquement par un objet JSON valide.", contenu, None, 4000)
+        if err or rep is None:
+            return None
+        return _extraire_json(getattr(rep, "output_text", "") or "")
+
+    def texte(self, consigne: str, contenu: str) -> Reponse:
+        rep, err = self._appel(consigne, contenu, None)
+        if err:
+            return err
+        texte = (getattr(rep, "output_text", "") or "").strip()
+        if getattr(rep, "status", "") == "incomplete":
+            texte += "\n\n[À COMPLÉTER : réponse interrompue, trop longue]"
+        return Reponse(texte, cout_usd=self.cout(rep.usage))
+
+    def texte_cite(self, consigne: str, question: str, pages: list[PageDoc]) -> Reponse:
+        lisibles = [p for p in pages if p.texte.strip()]
+        if not lisibles:
+            return Reponse("", erreur="Aucun texte lisible à transmettre.")
+        corps = "\n".join(f"\n[{i}] {p.titre}\n{p.texte}" for i, p in enumerate(lisibles, 1))
+        # Pages d'abord, question ensuite : OpenAI met en cache le début identique des requêtes sur un même DCE.
+        rep, err = self._appel(consigne + CONSIGNE_CITATIONS_JSON, f"{corps}\n\nQuestion : {question}", self.SCHEMA_CITE)
+        if err:
+            return err
+        try:
+            obj = json.loads(getattr(rep, "output_text", "") or "")
+        except ValueError:
+            obj = None
+        if not isinstance(obj, dict) or not isinstance(obj.get("reponse"), str):
+            return Reponse("", cout_usd=self.cout(rep.usage), erreur="Réponse d'OpenAI inexploitable.")
+        cites = [Citation(lisibles[c["page"] - 1].fichier, lisibles[c["page"] - 1].page, str(c.get("extrait", "")))
+                 for c in obj.get("citations") or []
+                 if isinstance(c, dict) and isinstance(c.get("page"), int) and 1 <= c["page"] <= len(lisibles)]
+        return Reponse(obj["reponse"], cites, cout_usd=self.cout(rep.usage))
+
+
 def externe_autorise() -> bool:
     return os.getenv("SIE_LLM_EXTERNE_AUTORISE", "").lower() in ("oui", "1", "true")
 
 
 def moteurs_disponibles() -> list[str]:
-    """Moteurs utilisables ici : « aucun » toujours, Claude si autorisé et clé présente, Ollama s'il répond."""
+    """Moteurs utilisables ici : « aucun » toujours, OpenAI / Claude si autorisés et clé présente, Ollama s'il répond."""
     out = ["aucun"]
+    if externe_autorise() and os.getenv("OPENAI_API_KEY"):
+        out.append("openai")
     if externe_autorise() and (os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")):
         out.append("anthropic")
     if OllamaLLM.disponible():
@@ -269,6 +364,8 @@ def client(choix: str | None = None) -> ClientLLM:
     choix = (choix or os.getenv("SIE_LLM", "aucun")).lower()
     if choix == "ollama":
         return OllamaLLM()
+    if choix in ("openai", "gpt"):
+        return OpenAILLM()
     if choix in ("anthropic", "claude"):
         return AnthropicLLM()
     return AucunLLM()

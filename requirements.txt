@@ -7,4 +7,5 @@ streamlit>=1.40
 pandas>=2.0
 reportlab>=4.0        # uniquement pour générer les données fictives
 pytest>=8.0
+openai>=3.60           # IA OpenAI (choix SIE), désactivée par défaut (voir sie_tender/llm.py)
 anthropic>=2.1        # IA Claude, désactivée par défaut (voir sie_tender/llm.py)
