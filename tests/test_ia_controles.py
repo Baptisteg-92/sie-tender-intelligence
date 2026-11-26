@@ -61,3 +61,24 @@ def test_nombres_absents():
     sources = ["Délai d'exécution : 14 semaines. Montant estimé 120 000 € HT."]
     assert nombres_absents("Le délai est de 14 semaines pour 120 000 € HT, en 3 phases.", sources) == []
     assert nombres_absents("Soit 98 jours, ou 2,5 mois, sur [4].", sources) == ["98", "2.5"]
+
+
+def test_brouillon_passe_par_le_service_rag():
+    from sie_tender import ia
+    from sie_tender.models import Consultation, SectionMemoire
+
+    class FauxRAG:
+        def __init__(self):
+            self.demande = None
+
+        def rediger(self, demande):
+            self.demande = demande
+            return {"statut": "propose", "texte": "Nous trions les déchets. [À COMPLÉTER : filière]", "moteur": "openai:gpt-6.2-sol",
+                    "cout_usd": 0.02, "avertissements": ["1 extrait cité introuvable"],
+                    "citations": [{"fichier": "2023_x/memoire.docx", "page": 4, "extrait": "tri à la source", "verifiee": True}]}
+
+    c = Consultation(dossier="d")
+    rag = FauxRAG()
+    r = ia.brouillon_section(c, SectionMemoire(titre="Gestion des déchets", ponderation=20), FauxLLM({}), rag=rag)
+    assert r.moteur == "rag:openai:gpt-6.2-sol" and r.citations[0].verifiee and r.avertissements
+    assert rag.demande["titre"] == "Gestion des déchets" and rag.demande["ponderation"] == 20

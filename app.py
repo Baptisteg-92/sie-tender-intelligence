@@ -393,6 +393,8 @@ def appeler_ia(a: Affaire, fonction, *args):
 
 def afficher_reponse(a: Affaire, r, supprimable: bool = True) -> None:
     st.markdown(r.texte)
+    for av in getattr(r, "avertissements", []) or []:
+        st.warning(av, icon=":material/warning:")
     verifiees = [c for c in r.citations if c.verifiee]
     douteuses = [c for c in r.citations if not c.verifiee]
     if r.type != "memoire":
@@ -1564,6 +1566,8 @@ def page_memoire() -> None:
                         x = brouillons[-1]
                         st.markdown(f'<div class="sie-citation">{x.texte}</div>', unsafe_allow_html=True)
                         st.caption(f"{x.moteur} · à partir de {len(x.citations)} passage(s) d'archives · {x.cout_usd:.3f} $")
+                        for av in x.avertissements:
+                            st.warning(av, icon=":material/warning:")
                         if st.button("Reprendre ce brouillon", key=f"rb_{s.id}", icon=":material/add:"):
                             s.contenu = (s.contenu + "\n\n" if s.contenu else "") + x.texte
                             s.statut = StatutSection.PROPOSE if s.statut == StatutSection.A_COMPLETER else s.statut

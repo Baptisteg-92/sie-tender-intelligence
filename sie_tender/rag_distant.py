@@ -68,6 +68,13 @@ class BibliothequeRAG:
                                         "activite": ", ".join(a.get("activites") or [])}
         return [(a["affaire"], a["score"]) for a in res]
 
+    def rediger(self, demande: dict) -> dict:
+        """Brouillon de section par le service RAG (POST /draft) : droits d'accès, prix jamais envoyés,
+        citations revérifiées et journal des envois, appliqués côté serveur. Délai long : l'IA rédige."""
+        req = urllib.request.Request(self.url + "/draft", data=json.dumps(demande).encode(), headers=self.entetes, method="POST")
+        with urllib.request.urlopen(req, timeout=max(self.delai, 600)) as r:
+            return json.loads(r.read())
+
     @property
     def documents(self) -> list[_DocumentDistant]:
         return [_DocumentDistant(affaire=a, meta=m) for a, m in self._meta.items()]

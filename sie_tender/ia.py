@@ -118,11 +118,35 @@ les extraits d'anciens mémoires de l'entreprise et les exigences du DCE fournis
 - Rends uniquement le texte de la section, en paragraphes, sans titre."""
 
 
-def brouillon_section(c: Consultation, section: SectionMemoire, moteur: ClientLLM) -> ReponseIA:
+def _brouillon_par_rag(rag, c: Consultation, section: SectionMemoire, exigences) -> ReponseIA:
+    lots = [l for l in c.lots if l.numero == section.lot] if section.lot else [l for l in c.lots if l.retenu]
+    activites = sorted({a for l in lots for a in l.activites})
+    d = rag.rediger({"titre": section.titre[:300], "critere": section.critere, "ponderation": section.ponderation,
+                     "exigences": [e.texte for e in exigences], "lot": section.lot, "activites": activites,
+                     "objet_marche": c.fiche.intitule.valeur or c.fiche.objet.valeur or ""})
+    if d.get("statut") == "erreur":
+        raise RuntimeError(d.get("erreur") or "Le service RAG n'a pas pu rédiger ce brouillon.")
+    texte = d.get("texte") or ""
+    if d.get("statut") == "passages_seuls" and d.get("erreur"):
+        texte = texte or f"[Pas de brouillon : {d['erreur']}]"
+    return ReponseIA(type="memoire", question=f"Brouillon : {section.titre}", texte=texte, moteur=f"rag:{d.get('moteur', '?')}",
+                     cout_usd=round(d.get("cout_usd") or 0.0, 4), avertissements=list(d.get("avertissements") or []),
+                     citations=[CitationIA(fichier=x["fichier"], page=x.get("page"), extrait=x["extrait"], verifiee=bool(x["verifiee"]))
+                                for x in d.get("citations") or []])
+
+
+def brouillon_section(c: Consultation, section: SectionMemoire, moteur: ClientLLM, rag=None) -> ReponseIA:
+    """Brouillon d'une section. Si le service RAG est branché (SIE_RAG_URL), c'est lui qui rédige : un seul chemin
+    vers l'IA pour les archives, avec ses garde-fous. Sinon, rédaction ici à partir des passages proposés."""
     _exiger(moteur)
     critere = section.titre + (f" ({section.ponderation:g} % de la note)" if section.ponderation else "")
     mots = set(jetons(section.titre))
     exigences = [e for e in c.exigences if mots & set(jetons(e.texte))][:15]
+    if rag is None:
+        from .rag_distant import BibliothequeRAG
+        rag = BibliothequeRAG.depuis_env()
+    if rag is not None:
+        return _brouillon_par_rag(rag, c, section, exigences)
     passages = section.passages_proposes[:5]
     contenu = [f"Consultation : {c.fiche.intitule.valeur or c.fiche.objet.valeur or 'non renseignée'}",
                f"Section à rédiger : {critere}", "", "Exigences du DCE liées à cette section :"]
