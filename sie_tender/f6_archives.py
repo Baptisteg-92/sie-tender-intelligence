@@ -47,6 +47,9 @@ def jetons(texte: str) -> list[str]:
         out.append(m)
     return out
 
+# Cadre de réponse en tableau : « CRITÈRE 1 – VALEUR TECHNIQUE (50 points) », « Sous-critère 1.1 : Méthodologie... »
+_CHAPITRE_CRT = re.compile(r"^\s*(?:crit[eè]re\s+(?P<c>\d+)|sous[\s-]*crit[eè]re\s+(?P<n>\d+\.\d+))\s*[-–:]\s*(?P<t>[^|\n]{3,250})", re.M | re.I)
+
 
 @dataclass
 class Morceau:
@@ -218,11 +221,23 @@ def cadre_reponse(pieces) -> list[ChapitreCadre]:
     from .recherche_texte import source
 
     ordre = {TypePiece.ANNEXE: 0, TypePiece.AUTRE: 1, TypePiece.RC: 2}
-    for p in sorted((p for p in pieces if p.type in ordre and p.lisible and p.pages), key=lambda p: (ordre[p.type], p.fichier)):
+    for p in sorted((p for p in pieces if (p.type in ordre or re.search(r"cadre[\s_-]*de[\s_-]*r[ée]ponse", p.fichier, re.I)) and p.lisible and p.pages), key=lambda p: (not re.search(r"cadre[\s_-]*de[\s_-]*r[ée]ponse", p.fichier, re.I), ordre.get(p.type, 3), p.fichier)):
         chapitres: list[ChapitreCadre] = []
+        if re.search(r"cadre[\s_-]*de[\s_-]*r[ée]ponse", p.fichier, re.I):
+            for page in p.pages:
+                for m in _CHAPITRE_CRT.finditer(page.texte):
+                    numero = m.group("c") or m.group("n")
+                    if any(ch.numero == numero for ch in chapitres):
+                        continue
+                    titre = re.sub(r"\s*\(\d+\s*(?:points?|%)\)\s*$", "", m.group("t").strip()).strip(" .:-–")
+                    chapitres.append(ChapitreCadre(numero, titre, 1 if m.group("c") else 2,
+                                                   source(p, page.numero, page.texte, m.start(), m.end())))
+            if len(chapitres) >= 2:
+                return chapitres
+            chapitres = []
         for page in p.pages:
             m_cadre = _CADRE.search(normaliser(page.texte))
-            if not m_cadre and not chapitres:
+            if not m_cadre and not chapitres and not re.search(r"cadre[\s_-]*de[\s_-]*r[ée]ponse", p.fichier, re.I):
                 continue
             for m in _CHAPITRE.finditer(page.texte):
                 titre = m.group("t").strip(" .:-–")

@@ -15,18 +15,20 @@ import re
 from .llm import AucunLLM, ClientLLM
 from .models import Champ, FicheRenseignement, Lot, Piece, Source, Statut, TypePiece
 from .recherche_texte import extrait_present, iter_matches, pieces_par_priorite, premier
+from .ingestion import piece_generique
 from .texte import normaliser
 
 I = re.IGNORECASE
 _MOIS = r"(?:janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[uû]t|septembre|octobre|novembre|d[ée]cembre)"
-_DATE = rf"(?:(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+)?(?:\d{{1,2}}(?:er)?\s+{_MOIS}\s+\d{{4}}|\d{{1,2}}/\d{{1,2}}/\d{{2,4}})"
-_HEURE = r"(?:\s*(?:à|a|,)?\s*\d{1,2}\s*[hH:]\s*\d{0,2}(?:\s*min)?)?"
+_DATE = rf"(?:(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+)?(?:\d{{1,2}}(?:er)?\s+{_MOIS}\s+\d{{4}}|\d{{1,2}}\s*/\s*\d{{1,2}}\s*/\s*\d{{2,4}})"
+_HEURE = r"(?:\s*(?:à|a|,)?\s*\d{1,2}\s*(?:heures?|[hH:])\s*\d{0,2}(?:\s*min)?)?"
 _DATE_HEURE = rf"(?P<v>{_DATE}{_HEURE})"
 _LIGNE = r"(?P<v>[^\n]{3,200})"
 
 MOTIFS: dict[str, list[re.Pattern]] = {
     "reference": [
-        re.compile(r"(?:r[ée]f[ée]rence|n[°o]\s*de\s*(?:la\s*)?consultation|n[°o]\s*(?:du\s*)?march[ée]|march[ée]\s*n[°o])\s*(?:du marché|de la consultation)?\s*:?\s*(?P<v>[A-Z0-9][A-Z0-9_./\-]{2,40})", I),
+        re.compile(r"consultation\s*n\s*[°o]\s*:?\s*(?P<v>[A-Z]{1,6}[\s-]?\d[A-Z0-9_./\-]{1,30})", I),
+        re.compile(r"(?:r[ée]f[ée]rence|n[°o]\s*de\s*(?:la\s*)?consultation|n[°o]\s*(?:du\s*)?march[ée]|march[ée]\s*n[°o])\s*(?:du marché|de la consultation)?\s*:?\s*(?P<v>(?=[A-Z_./\-]*\d)[A-Z0-9][A-Z0-9_./\-]{2,40})", I),
     ],
     "intitule": [
         re.compile(rf"^\s*(?:intitul[ée]\s*(?:de la consultation|du march[ée])?)\s*:\s*{_LIGNE}", I | re.M),
@@ -36,6 +38,7 @@ MOTIFS: dict[str, list[re.Pattern]] = {
         re.compile(r"(?:la (?:pr[ée]sente )?consultation|le (?:pr[ée]sent )?march[ée])\s+(?:porte sur|a pour objet)\s+(?P<v>[^\n.]{5,250})", I),
     ],
     "lieu": [
+        re.compile(r"lieu\s*d'ex[ée]cution des (?:prestations|travaux) est\s*:?\s*(?P<v>[^\n■]{3,80}(?:\n[^\n■:]{3,80}){0,2})", I),
         re.compile(rf"(?:lieu\s*d'ex[ée]cution|adresse du chantier|lieu des travaux|site d'ex[ée]cution)\s*(?:des travaux|des prestations)?\s*:\s*{_LIGNE}", I),
     ],
     "maitre_ouvrage": [
@@ -48,7 +51,7 @@ MOTIFS: dict[str, list[re.Pattern]] = {
         re.compile(r"(?P<v>proc[ée]dure adapt[ée]e(?: ouverte)?|appel d'offres (?:ouvert|restreint)|proc[ée]dure (?:avec|sans) n[ée]gociation|march[ée] [àa] proc[ée]dure adapt[ée]e|\bMAPA\b)", I),
     ],
     "date_limite_remise": [
-        re.compile(rf"(?:date\s*(?:et heure)?\s*limites?\s*(?:de\s*)?(?:r[ée]ception|remise|d[ée]p[oô]t)\s*des\s*(?:offres|plis|candidatures))[^\n:]{{0,40}}:?\s*(?:le\s*)?{_DATE_HEURE}", I),
+        re.compile(rf"(?:date\s*(?:et heure)?\s*limites?\s*(?:de\s*)?(?:r[ée]ception|remise|d[ée]p[oô]t)\s*des\s*(?:offres|plis|candidatures))[^\n:]{{0,40}}?:?\s*(?:le\s*)?{_DATE_HEURE}", I),
         re.compile(rf"(?:offres|plis)\s*(?:devront|doivent)\s*(?:[eê]tre\s*)?(?:remis|d[ée]pos[ée]s|parvenir|transmis)[^.\n]{{0,80}}?(?:avant\s*le|au plus tard\s*le|le)\s*{_DATE_HEURE}", I),
     ],
     "date_limite_questions": [
@@ -91,6 +94,15 @@ _LOT_LIGNE = re.compile(
     r"^\s*(?:[-•*]\s*)?lot\s*(?:n\s*[°o]\s*)?(?P<num>\d{1,2})\s*[:\-–.)]?\s*(?P<intitule>[A-ZÀ-Ýa-zà-ý][^\n]{2,100})$",
     I | re.M,
 )
+# Tableau d'allotissement du RC : « Macro lot 1 1.1 Intitulé 45223220-4 ... » ou « Lot 3 3 Intitulé ... ».
+_LOT_TABLEAU = re.compile(
+    r"^\s*(?P<macro>macro[\s-]*)?lot\s*(?P<num>\d{1,2})\s+(?P<sous>\d{1,2}(?:\.\d{1,2})?)\s+(?P<intitule>[A-ZÀ-Ýa-zà-ý][^\n]{2,140}(?:\n(?!\s*(?:macro|lot|\d))[a-zà-ý][^\n]{1,60})?)$",
+    I | re.M,
+)
+_CPV = re.compile(r"\s\d{8}-\d.*$", re.S)
+_QR = re.compile(r"questions?[\s_-]*r[ée]ponses?|avis rectificatif|\bmodificati", I)
+_PROLONGATION = re.compile(
+    rf"(?:date limite[^.]{{0,80}}?)?(?:prolong[ée]e?|report[ée]e?|repouss[ée]e?|d[ée]cal[ée]e?)\s+(?:au|jusqu'au)\s+{_DATE_HEURE}", I)
 _LOT_UNIQUE = re.compile(r"lot unique|n'est pas alloti|pas d'allotissement|non alloti", I)
 
 _ALERTES = [
@@ -109,9 +121,31 @@ def _champ(t) -> Champ:
     return Champ(valeur=t.valeur, source=t.source, statut=Statut.EXTRAIT, methode="regle")
 
 
+def _lots_tableau(pieces: list[Piece]) -> dict[str, Lot]:
+    """Tableau d'allotissement (RC en priorité), sous-lots regroupés par macro-lot."""
+    for piece in pieces_par_priorite(pieces, [TypePiece.RC, TypePiece.AE, TypePiece.CCAP]):
+        lots: dict[str, Lot] = {}
+        sous: dict[str, list[str]] = {}
+        for t in iter_matches([piece], _LOT_TABLEAU):
+            num = str(int(t.match.group("num")))
+            intitule = re.sub(r"\s+", " ", _CPV.sub("", t.match.group("intitule"))).strip(" :;,.-–")
+            intitule = re.sub(r"^R[ée]alisation (?:de travaux (?:de |d'|pour (?:les |la )?)?|de )", "", intitule).strip()
+            if t.match.group("macro"):
+                sous.setdefault(num, []).append(f"{t.match.group('sous')} {intitule}")
+                if num not in lots:
+                    lots[num] = Lot(numero=num, intitule="", source=t.source)
+            elif num not in lots:
+                lots[num] = Lot(numero=num, intitule=intitule[:1].upper() + intitule[1:], source=t.source)
+        for num, liste in sous.items():
+            lots[num].intitule = f"Macro-lot {num} : " + " ; ".join(liste)
+        if len(lots) >= 2:
+            return lots
+    return {}
+
+
 def extraire_lots(pieces: list[Piece]) -> list[Lot]:
-    lots: dict[str, Lot] = {}
-    for t in iter_matches(pieces_par_priorite(pieces, _ORDRE), _LOT_LIGNE):
+    lots: dict[str, Lot] = _lots_tableau(pieces)
+    for t in [] if lots else iter_matches(pieces_par_priorite(pieces, _ORDRE), _LOT_LIGNE):
         num = str(int(t.match.group("num")))
         intitule = re.sub(r"\s+", " ", t.match.group("intitule")).strip(" :;,.-–")
         # « Lot 3 sera attribué... » n'est pas une ligne de liste.
@@ -127,18 +161,43 @@ def extraire_lots(pieces: list[Piece]) -> list[Lot]:
     # Allotissement non trouvé : un lot à vérifier, pour que SIE puisse le retenir ou le corriger.
     if not lots and not any(p.lot for p in pieces):
         lots["1"] = Lot(numero="1", intitule="Lot unique (allotissement non trouvé dans le DCE, à vérifier)")
-    # Pièces techniques par lot sans ligne de liste : on garde le lot, intitulé à vérifier.
+    # Pièces par lot sans liste de lots dans le texte : on garde le lot, intitulé à vérifier.
     for p in pieces:
-        if p.lot and p.lot not in lots:
+        if p.lot and p.lot not in lots and p.type in (TypePiece.AE, TypePiece.CCTP, TypePiece.DPGF, TypePiece.BPU) \
+                and (not lots or lots.get("1", Lot(numero="1", intitule="")).source is None):
             lots[p.lot] = Lot(numero=p.lot, intitule="(intitulé à vérifier)",
                               source=Source(piece_id=p.id, fichier=p.fichier, extrait="numéro de lot lu dans le nom du fichier"))
     return sorted(lots.values(), key=lambda l: int(l.numero))
 
 
+def _pieces_fiche(pieces: list[Piece]) -> list[Piece]:
+    """Pièces lues pour la fiche : sans les notices génériques (DUME, DC1...) ni les questions-réponses."""
+    return [p for p in pieces_par_priorite(pieces, _ORDRE) if not piece_generique(p.fichier) and not _QR.search(p.fichier)]
+
+
+def _date_nom(nom: str) -> str:
+    """« Questions-réponses 06.10.2026.pdf » -> "20261006", pour trier les fichiers par date."""
+    d = re.sub(r"\D", "", nom)[-8:]
+    return d[4:] + d[2:4] + d[:2] if len(d) == 8 else ""
+
+
+def _report_date_limite(fiche: FicheRenseignement, pieces: list[Piece]) -> None:
+    """Date limite prolongée dans les questions-réponses ou un avis rectificatif : on garde la plus récente."""
+    qr = sorted((p for p in pieces if p.lisible and _QR.search(p.fichier)),
+                key=lambda p: (_date_nom(p.fichier), p.fichier))
+    for piece in reversed(qr):
+        trouves = list(iter_matches([piece], _PROLONGATION))
+        if trouves:
+            t = trouves[-1]
+            fiche.date_limite_remise = Champ(valeur=t.valeur, source=t.source, statut=Statut.A_VERIFIER, methode="regle",
+                                             valeur_avant=fiche.date_limite_remise.valeur)
+            return
+
+
 def _alertes(pieces: list[Piece]) -> list[str]:
     vues: list[str] = []
     for motif, libelle in _ALERTES:
-        t = premier(pieces_par_priorite(pieces, _ORDRE), [motif])
+        t = premier(_pieces_fiche(pieces), [motif])
         if t:
             ou = f"{t.source.fichier} p.{t.source.page}"
             vues.append(f"{libelle} ({ou}) : « {t.source.extrait} »")
@@ -212,7 +271,7 @@ def _relire_llm(fiche: FicheRenseignement, pieces: list[Piece], llm: ClientLLM, 
 def construire_fiche(pieces: list[Piece], llm: ClientLLM | None = None, journal: list[str] | None = None) -> tuple[FicheRenseignement, list[Lot]]:
     journal = journal if journal is not None else []
     llm = llm or AucunLLM()
-    ordonnees = pieces_par_priorite(pieces, _ORDRE)
+    ordonnees = _pieces_fiche(pieces)
     fiche = FicheRenseignement()
     for nom, motifs in MOTIFS.items():
         setattr(fiche, nom, _champ(premier(ordonnees, motifs)))
@@ -232,7 +291,9 @@ def construire_fiche(pieces: list[Piece], llm: ClientLLM | None = None, journal:
                                    source=trouves[0][1].source, statut=Statut.EXTRAIT)
 
     # Visite obligatoire : oui / non / à vérifier, avec la source.
-    t_obl = premier(ordonnees, [re.compile(r"visite[^.\n]{0,60}(?P<v>obligatoire|facultative|conseill[ée]e|recommand[ée]e)", I)])
+    t_obl = premier(ordonnees, [
+        re.compile(r"(?P<v>obligatoire)ment\s+(?:effectuer|r[ée]aliser|proc[ée]der [àa])\s+(?:une|la)\s+visite", I),
+        re.compile(r"visite[^.\n]{0,60}(?P<v>obligatoire|facultative|conseill[ée]e|recommand[ée]e)", I)])
     if t_obl:
         fiche.visite_obligatoire = Champ(valeur="oui" if normaliser(t_obl.valeur) == "obligatoire" else "non",
                                          source=t_obl.source, statut=Statut.EXTRAIT)
@@ -247,6 +308,7 @@ def construire_fiche(pieces: list[Piece], llm: ClientLLM | None = None, journal:
     if fiche.intitule.statut == Statut.A_VERIFIER and fiche.objet.statut == Statut.EXTRAIT:
         fiche.intitule = fiche.objet.model_copy()
 
+    _report_date_limite(fiche, pieces)
     _relire_llm(fiche, pieces, llm, journal)
     fiche.alertes = _alertes(pieces)
     lots = extraire_lots(pieces)

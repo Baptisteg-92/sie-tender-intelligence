@@ -9,7 +9,8 @@ from __future__ import annotations
 import re
 
 from .export import ref
-from .models import Alerte, CategorieExigence, Consultation, PieceReponse, Statut
+from .ingestion import piece_generique
+from .models import Alerte, CategorieExigence, Consultation, PieceReponse, Statut, TypePiece
 
 # (intitulé, catégorie, destination, à intégrer au mémoire)
 CHECKLIST = [
@@ -62,9 +63,29 @@ def initialiser_registre(c: Consultation) -> int:
         ajouter(Alerte(intitule=lib, categorie="Administratif", destination="Contrôle final", source=m.group("fic"),
                        page=m.group("page"), extrait=m.group("ext").rstrip("» ").strip(), origine="dce",
                        priorite="haute" if re.search(r"obligatoire|irrecevab|rejet|exig", lib, re.I) else "normale"))
+    # Points du registre : pièces écrites pour ce marché (RC, CCAP, CCTP, AE, cadre de réponse),
+    # pas les diagnostics et annexes, ni les notices génériques ; les interfaces restent dans le mémoire.
+    sources_registre = {p.fichier for p in c.pieces if p.type not in (TypePiece.ANNEXE, TypePiece.AUTRE)
+                        and not piece_generique(p.fichier)}
+    textes_vus: set[str] = set()
+    sources_admin = {p.fichier for p in c.pieces if p.type in (TypePiece.RC, TypePiece.CCAP, TypePiece.AE)}
     for e in c.exigences:
-        if e.categorie not in _DEST_PAR_CATEGORIE:
+        if e.categorie not in _DEST_PAR_CATEGORIE or e.categorie == CategorieExigence.INTERFACE:
             continue
+        if e.source and e.source.fichier not in sources_registre and not re.search(r"cadre de r[ée]ponse", e.source.fichier, re.I):
+            continue
+        # Environnement / RSE : les CCTP en sont pleins (déchets, amiante...) ; dans le registre on garde ce que
+        # demandent le RC, le CCAP et le cadre de réponse, le reste sert à rédiger le mémoire.
+        if e.categorie == CategorieExigence.RSE and e.source and e.source.fichier not in sources_admin \
+                and not re.search(r"cadre de r[ée]ponse", e.source.fichier, re.I):
+            continue
+        # Références réglementaires citées (« Décret n°... », « L'arrêté du... ») et répétitions : pas des points à traiter.
+        if re.match(r"\W*(?:l[ae']\s*)?(?:d[ée]cret|arr[êe]t[ée]|loi|norme|circulaire|code|directive|r[eè]glement \(|nf\s|dtu)\b", e.texte, re.I):
+            continue
+        cle_texte = re.sub(r"\W+", " ", e.texte.lower())[:90]
+        if cle_texte in textes_vus:
+            continue
+        textes_vus.add(cle_texte)
         cat, dest, memo = _DEST_PAR_CATEGORIE[e.categorie]
         ajouter(Alerte(intitule=e.texte[:160], categorie=cat, destination=dest, memoire=memo, lot=e.lot,
                        source=e.source.fichier, page=str(e.source.page) if e.source.page else None, extrait=e.source.extrait,

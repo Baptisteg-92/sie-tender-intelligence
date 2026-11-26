@@ -1,6 +1,7 @@
 """Import d'un DCE : lecture des fichiers, OCR si besoin, classement des pièces."""
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import tempfile
@@ -24,12 +25,23 @@ _INDICES_TYPE: list[tuple[TypePiece, list[str]]] = [
     (TypePiece.PLAN, [r"\bplan(s)?\b", "synoptique"]),
 ]
 
-_LOT = re.compile(r"\blot\s*(?:n\s*[°o]?\s*)?(\d{1,2})\b", re.IGNORECASE)
+_LOT = re.compile(r"\b(?:macro[\s-]*)?lot\s*(?:n\s*[°o]?\s*)?(\d{1,2})\b|\bml\s*(\d)\b", re.IGNORECASE)
+# Annexes et notices génériques (DUME, DC1/DC2, signature électronique) : jamais RC/CCAP/AE, ni source d'exigences.
+_ANNEXE_NOM = re.compile(r"^annexe\b|\bannexe \d+ (?:au|du) |note explicative|\bdume\b|signature electronique|\bdc[1-4]\b")
+_PARASITES = re.compile(r"^(?:thumbs\.db|desktop\.ini|\.ds_store)$|\.(?:log|tmp|bak|lnk|ini)$", re.IGNORECASE)
+
+
+def piece_generique(nom_fichier: str) -> bool:
+    """Notice ou formulaire administratif standard (DUME, DC1/DC2, signature électronique...)."""
+    return bool(re.search(r"note explicative|\bdume\b|signature electronique|\bdc[1-4]\b",
+                          normaliser(Path(nom_fichier).stem.replace("_", " ").replace("-", " "))))
 
 
 def indices_type(nom_fichier: str, premiere_page: str = "") -> tuple[TypePiece | None, TypePiece | None]:
     """Type suggéré par le nom du fichier, et type suggéré par la page de garde (None si rien trouvé)."""
     nom = normaliser(Path(nom_fichier).stem.replace("_", " ").replace("-", " "))
+    if _ANNEXE_NOM.search(nom):
+        return TypePiece.ANNEXE, None
     par_nom = next((t for t, motifs in _INDICES_TYPE if any(re.search(m, nom) for m in motifs)), None)
     debut = normaliser(premiere_page[:1500])
     meilleur: tuple[int, TypePiece] | None = None
@@ -43,6 +55,8 @@ def indices_type(nom_fichier: str, premiere_page: str = "") -> tuple[TypePiece |
 
 def type_de_piece(nom_fichier: str, premiere_page: str = "") -> TypePiece:
     nom = normaliser(Path(nom_fichier).stem.replace("_", " ").replace("-", " "))
+    if _ANNEXE_NOM.search(nom):
+        return TypePiece.ANNEXE
     for t, motifs in _INDICES_TYPE:
         if any(re.search(m, nom) for m in motifs):
             return t
@@ -65,7 +79,7 @@ def lot_de_piece(nom_fichier: str, type_piece: TypePiece) -> str | None:
     if type_piece in (TypePiece.RC, TypePiece.CCAP):
         return None
     m = _LOT.search(Path(nom_fichier).stem.replace("_", " ").replace("-", " "))
-    return str(int(m.group(1))) if m else None
+    return str(int(m.group(1) or m.group(2))) if m else None
 
 
 def _lire_pdf(chemin: Path) -> tuple[list[Page], str | None]:
@@ -143,6 +157,21 @@ def lire_fichier(chemin: Path) -> Piece:
     return piece
 
 
+def _extraire_zips_imbriques(racine: Path, profondeur: int = 3) -> None:
+    """Décompresse sur place les zips contenus dans le DCE (fréquent : un zip par lot)."""
+    for _ in range(profondeur):
+        zips = [z for z in racine.rglob("*") if z.is_file() and z.suffix.lower() == ".zip" and not (z.parent / (z.stem + "_zip")).exists()]
+        if not zips:
+            return
+        for z in zips:
+            cible = z.parent / (z.stem + "_zip")
+            try:
+                with zipfile.ZipFile(z) as f:
+                    f.extractall(cible)
+            except (zipfile.BadZipFile, OSError):
+                cible.mkdir(exist_ok=True)
+
+
 def importer_dce(chemin: str | Path, avancement=None) -> list[Piece]:
     """Lit un dossier ou une archive ZIP de DCE et renvoie ses pièces classées.
 
@@ -157,16 +186,31 @@ def importer_dce(chemin: str | Path, avancement=None) -> list[Piece]:
         racine = tmp
     elif chemin.is_dir():
         racine = chemin
+        if any(z.suffix.lower() == ".zip" for z in chemin.rglob("*.[zZ][iI][pP]")):
+            # zips imbriqués : on travaille sur une copie pour ne rien écrire dans le dossier de l'utilisateur
+            tmp = Path(tempfile.mkdtemp(prefix="dce_"))
+            racine = Path(shutil.copytree(chemin, tmp / chemin.name))
     elif chemin.is_file():
         return [lire_fichier(chemin)]
     else:
         raise FileNotFoundError(chemin)
     try:
-        fichiers = sorted(p for p in racine.rglob("*") if p.is_file() and not p.name.startswith((".", "~$")))
-        pieces = []
+        _extraire_zips_imbriques(racine)
+        fichiers = sorted(p for p in racine.rglob("*") if p.is_file() and p.suffix.lower() != ".zip"
+                          and not p.name.startswith((".", "~$")) and not _PARASITES.search(p.name))
+        pieces, vus = [], {}
         for i, f in enumerate(fichiers):
             if avancement:
                 avancement(i / max(len(fichiers), 1), f"Lecture des pièces : {i + 1}/{len(fichiers)} ({f.name})")
+            contenu = f.read_bytes()
+            if not contenu:
+                pieces.append(Piece(fichier=f.name, lisible=False, remarque="Fichier vide (0 octet) : à redemander à l'acheteur.",
+                                    type=type_de_piece(f.name)))
+                continue
+            empreinte = hashlib.sha1(contenu).hexdigest()
+            if empreinte in vus:  # même fichier présent deux fois (zip dans le zip, copie) : lu une seule fois
+                continue
+            vus[empreinte] = f.name
             pieces.append(lire_fichier(f))
         return pieces
     finally:
