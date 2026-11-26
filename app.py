@@ -1224,7 +1224,10 @@ def page_demandes() -> None:
         nb_pages = None
         if pdf:
             from sie_tender.pdf import nb_pages as compter_pages
-            nb_pages = compter_pages(pdf)
+            try:
+                nb_pages = compter_pages(pdf)
+            except Exception:
+                e2.warning("Ce PDF ne s'ouvre pas (endommagé ou protégé par mot de passe).")
         plages_txt = e2.text_input("Plages de pages", placeholder="12-15, 38-42", disabled=pdf is None,
                                    help=f"Le PDF compte {nb_pages} pages." if nb_pages else None)
         plages, erreurs = lire_plages(plages_txt, nb_pages) if pdf and plages_txt else ([], [])
