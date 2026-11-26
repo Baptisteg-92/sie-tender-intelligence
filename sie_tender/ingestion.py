@@ -27,6 +27,20 @@ _INDICES_TYPE: list[tuple[TypePiece, list[str]]] = [
 _LOT = re.compile(r"\blot\s*(?:n\s*[°o]?\s*)?(\d{1,2})\b", re.IGNORECASE)
 
 
+def indices_type(nom_fichier: str, premiere_page: str = "") -> tuple[TypePiece | None, TypePiece | None]:
+    """Type suggéré par le nom du fichier, et type suggéré par la page de garde (None si rien trouvé)."""
+    nom = normaliser(Path(nom_fichier).stem.replace("_", " ").replace("-", " "))
+    par_nom = next((t for t, motifs in _INDICES_TYPE if any(re.search(m, nom) for m in motifs)), None)
+    debut = normaliser(premiere_page[:1500])
+    meilleur: tuple[int, TypePiece] | None = None
+    for t, motifs in _INDICES_TYPE:
+        for m in motifs[1:]:
+            r = re.search(m, debut)
+            if r and (meilleur is None or r.start() < meilleur[0]):
+                meilleur = (r.start(), t)
+    return par_nom, (meilleur[1] if meilleur else None)
+
+
 def type_de_piece(nom_fichier: str, premiere_page: str = "") -> TypePiece:
     nom = normaliser(Path(nom_fichier).stem.replace("_", " ").replace("-", " "))
     for t, motifs in _INDICES_TYPE:
@@ -55,33 +69,10 @@ def lot_de_piece(nom_fichier: str, type_piece: TypePiece) -> str | None:
 
 
 def _lire_pdf(chemin: Path) -> tuple[list[Page], str | None]:
-    import pymupdf as fitz
+    from .pdf import lire_pdf
 
-    pages: list[Page] = []
-    remarque = None
-    with fitz.open(chemin) as doc:
-        for i, page in enumerate(doc, start=1):
-            texte = page.get_text("text")
-            ocr = False
-            if len(texte.strip()) < 20 and page.get_images():
-                texte_ocr = _ocr_page(page)
-                if texte_ocr is None:
-                    remarque = "Pages scannées sans texte : OCR non disponible (installer Tesseract)."
-                else:
-                    texte, ocr = texte_ocr, True
-            pages.append(Page(numero=i, texte=nettoyer(texte), ocr=ocr))
-    return pages, remarque
-
-
-def _ocr_page(page) -> str | None:
-    """OCR via Tesseract si installé (paquet tesseract-ocr + langue fra)."""
-    if shutil.which("tesseract") is None:
-        return None
-    try:
-        tp = page.get_textpage_ocr(language="fra", dpi=300, full=True)
-        return page.get_text("text", textpage=tp)
-    except Exception:
-        return None
+    lues, remarque = lire_pdf(chemin)
+    return [Page(numero=n, texte=nettoyer(t), ocr=ocr) for n, t, ocr in lues], remarque
 
 
 def _lire_docx(chemin: Path) -> list[Page]:

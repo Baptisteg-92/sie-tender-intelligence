@@ -112,7 +112,8 @@ class Bibliotheque:
 
     # --- construction / sauvegarde ---
     @classmethod
-    def indexer(cls, dossier: str | Path) -> "Bibliotheque":
+    def indexer(cls, dossier: str | Path, garder=None) -> "Bibliotheque":
+        """garder(chemin) -> bool : filtre facultatif (ex. mémoires validés seulement)."""
         dossier = Path(dossier)
         morceaux, documents = [], []
         for rep in sorted(p for p in dossier.iterdir() if p.is_dir()):
@@ -121,6 +122,8 @@ class Bibliotheque:
                 meta = json.loads((rep / "affaire.json").read_text(encoding="utf-8"))
             for f in sorted(rep.rglob("*")):
                 if not f.is_file() or f.name == "affaire.json" or f.name.startswith("."):
+                    continue
+                if garder is not None and not garder(f):
                     continue
                 piece = lire_fichier(f)
                 if not piece.lisible:
@@ -341,9 +344,10 @@ def references_similaires(biblio: Bibliotheque | None, contexte: str, k: int = 3
 
     if biblio is None:
         return []
-    meta = {d.affaire: d.meta for d in biblio.documents}
+    similaires = biblio.affaires_similaires(contexte, k)
+    meta = {d.affaire: d.meta for d in biblio.documents}  # après la recherche : le service RAG les renseigne à ce moment
     out = []
-    for affaire, score in biblio.affaires_similaires(contexte, k):
+    for affaire, score in similaires:
         m = meta.get(affaire) or {}
         out.append(ReferenceProposee(affaire=affaire, score=score, activite=m.get("activite"), annee=m.get("annee"),
                                      type=m.get("type"), resultat=m.get("resultat")))
@@ -352,3 +356,40 @@ def references_similaires(biblio: Bibliotheque | None, contexte: str, k: int = 3
 
 def contexte_affaire(objet: str | None, lots: list[Lot]) -> str:
     return " ".join([objet or ""] + [l.intitule for l in lots if l.retenu is not False])
+
+
+def preparer_memoires(c, mode: str, lots: list[str]) -> None:
+    """Organise la trame selon le choix de SIE : « commun » (un mémoire pour plusieurs lots) ou « par_lot ».
+
+    Commun : sections communes (plan de l'acheteur) + une section propre à chaque lot choisi.
+    Par lot : une copie indépendante du plan pour chaque lot, que SIE complète séparément.
+    Les textes déjà rédigés sont conservés ; une section n'est jamais supprimée si elle a un contenu.
+    """
+    from .models import SectionMemoire, StatutSection
+
+    base = [s for s in c.trame_memoire if s.lot is None]
+    propres = [s for s in c.trame_memoire if s.lot is not None]
+    intitules = {l.numero: l.intitule for l in c.lots}
+
+    def est_disposition(s) -> bool:
+        return s.titre.startswith("Dispositions propres au lot")
+
+    nouvelles = list(base)
+    for lot in lots:
+        du_lot = [s for s in propres if s.lot == lot]
+        if mode == "commun":
+            # sections rédigées gardées ; une section « dispositions propres » par lot
+            gardees = [s for s in du_lot if s.contenu or est_disposition(s)]
+            if not any(est_disposition(s) for s in gardees):
+                gardees.insert(0, SectionMemoire(titre=f"Dispositions propres au lot {lot} : {intitules.get(lot, '')}".rstrip(" :"),
+                                                 lot=lot, statut=StatutSection.A_COMPLETER,
+                                                 note="Moyens, méthodes et interfaces spécifiques à ce lot."))
+        else:
+            copies = {s.id for s in du_lot if not est_disposition(s)}
+            gardees = [s for s in du_lot if s.id in copies or s.contenu]
+            gardees += [s.model_copy(deep=True, update={"id": f"{s.id}-L{lot}", "lot": lot}) for s in base
+                        if f"{s.id}-L{lot}" not in copies]
+        nouvelles += gardees
+    nouvelles += [s for s in propres if s.lot not in lots and s.contenu]  # textes d'un lot retiré : conservés
+    c.trame_memoire = nouvelles
+    c.mode_memoire, c.lots_memoire = mode, list(lots)

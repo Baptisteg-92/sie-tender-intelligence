@@ -1,5 +1,5 @@
 [server]
-maxUploadSize = 300
+maxUploadSize = 2000
 
 [browser]
 gatherUsageStats = false

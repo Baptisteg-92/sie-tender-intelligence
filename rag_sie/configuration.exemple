@@ -1,0 +1,27 @@
+# Exemple de configuration du service RAG sur le serveur SIE (à adapter, ne pas versionner le vrai fichier)
+SIE_RAG_ARCHIVES=\\SRV-FICHIERS\Memoires
+SIE_RAG_DONNEES=D:\SIE\rag\donnees
+SIE_RAG_BASE=postgresql://rag:MOT_DE_PASSE@localhost/sie_rag
+SIE_RAG_MODELES=D:\SIE\rag\modeles
+SIE_RAG_ENCODEUR=bge-m3
+SIE_RAG_RECLASSEUR=aucun
+SIE_RAG_DROITS=ntfs
+# Règle des mémoires validés : à remplacer par celle de SIE (dossier, nommage ou statut)
+SIE_RAG_MOTIF_VALIDES=valid|d[ée]finitif|final|rendu|envoy
+SIE_RAG_EXCLUSIONS=
+SIE_RAG_JETON=CHAINE_ALEATOIRE_LONGUE
+SIE_RAG_GROUPES_ADMIN=SIE\Admin-RAG
+SIE_RAG_HEURE_SYNCHRO=02:00
+# Périmètre décidé par SIE le 26/11/2026 : archives 2022 à 2026
+SIE_RAG_ANNEES=2022-2026
+# IA de rédaction : OpenAI (accord de principe de SIE par mail du 26/11/2026)
+SIE_LLM=openai
+SIE_LLM_MODELE=gpt-6.2-sol
+SIE_LLM_EFFORT=medium
+SIE_LLM_EXTERNE_AUTORISE=oui
+# Clé du projet OpenAI de SIE : à saisir sur le serveur uniquement, jamais dans un mail ni dans le dépôt
+OPENAI_API_KEY=sk-proj-A_SAISIR_SUR_LE_SERVEUR
+# Si OpenAI accorde à SIE un projet « Europe » (résidence des données) :
+# SIE_OPENAI_URL=https://eu.api.openai.com/v1
+# Pour la comparaison avec Claude (plus tard) :
+# ANTHROPIC_API_KEY=sk-ant-A_SAISIR_SUR_LE_SERVEUR

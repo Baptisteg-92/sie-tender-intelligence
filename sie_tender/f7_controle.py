@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 
 from .affaire import Affaire
-from .export import exporter_excel, exporter_trame_docx
+from .export import exporter_excel, exporter_trame_docx, sections_memoire
 from .f2_exigences import PIECES_CONNUES
 from .f5_dpgf import controles_dpgf, exporter_dpgf
 from .models import CategorieExigence, Constat, Statut, StatutSection
@@ -80,7 +80,22 @@ def controler(a: Affaire, aujourdhui: date | None = None) -> list[Constat]:
         if intitule:
             deposes.setdefault(intitule, []).append(f.name)
     produits = {"DPGF": bool(c.dpgf), "Mémoire technique": bool(c.trame_memoire)}
-    for pf in c.pieces_a_fournir:
+    if c.pieces_reponse:  # rubrique Documents renseignée : elle fait foi
+        for pr in c.pieces_reponse:
+            nom = pr.intitule + (f" (lot {pr.lot})" if pr.lot and f"lot {pr.lot}" not in pr.intitule else "")
+            produite = next((v for k, v in produits.items() if pr.intitule.startswith(k)), None)
+            if produite is not None and not pr.recu:
+                if produite:
+                    ajout("a_verifier", nom, "Générée par l'outil : à relire, puis à marquer reçue et validée dans Documents.")
+                else:
+                    ajout("bloquant", nom, "Pièce à produire avec l'outil, non encore générée.")
+                continue
+            if not pr.recu:
+                ajout("bloquant" if pr.obligatoire == "Obligatoire" else "a_verifier", nom,
+                      "Pièce non reçue." if pr.obligatoire == "Obligatoire" else "Pièce non reçue (caractère obligatoire à confirmer dans le RC).")
+            elif not pr.valide:
+                ajout("a_verifier", nom, "Pièce reçue, non validée par SIE (signature, format, date).")
+    for pf in ([] if c.pieces_reponse else c.pieces_a_fournir):
         if pf.intitule in produits:
             if not produits[pf.intitule]:
                 ajout("bloquant", pf.intitule, "Pièce à produire avec l'outil, non encore générée.")
@@ -95,6 +110,7 @@ def controler(a: Affaire, aujourdhui: date | None = None) -> list[Constat]:
         else:
             ajout("bloquant", pf.intitule, "Pièce manquante.")
     if (c.fiche.visite_obligatoire.valeur == "oui" and "Attestation de visite" not in deposes
+            and not any("visite" in pr.intitule.lower() and pr.recu for pr in c.pieces_reponse)
             and not any(pf.intitule == "Attestation de visite" for pf in c.pieces_a_fournir)):
         ajout("bloquant", "Attestation de visite", "Visite obligatoire : attestation non déposée.")
 
@@ -109,23 +125,55 @@ def controler(a: Affaire, aujourdhui: date | None = None) -> list[Constat]:
     out += [x for x in controles_dpgf(c) if x.gravite != "info"]
 
     # Mémoire
-    a_completer = [s.titre for s in c.trame_memoire if s.statut == StatutSection.A_COMPLETER and not s.contenu]
+    sections = sections_memoire(c)
+    a_completer = [s.titre + (f" (lot {s.lot})" if s.lot else "") for s in sections if s.statut == StatutSection.A_COMPLETER and not s.contenu]
     if a_completer:
         ajout("bloquant", "Mémoire", "Sections à compléter : " + " ; ".join(a_completer))
-    non_valides = [s.titre for s in c.trame_memoire if s.statut != StatutSection.VALIDE]
+    non_valides = [s.titre for s in sections if s.statut != StatutSection.VALIDE]
     if non_valides and not a_completer:
         ajout("a_verifier", "Mémoire", f"{len(non_valides)} sections non validées par SIE.")
-    texte_memoire = normaliser(" ".join((s.contenu or "") + " " + s.titre for s in c.trame_memoire))
+    texte_memoire = normaliser(" ".join((s.contenu or "") + " " + s.titre for s in sections))
     for sous in sorted({e.sous_categorie for e in c.exigences if e.categorie == CategorieExigence.RSE and e.sous_categorie}):
         if sous in MOTS_RSE and not re.search(MOTS_RSE[sous], texte_memoire):
             ajout("a_verifier", "RSE", f"Exigence RSE « {sous} » du DCE non traitée dans le mémoire.")
+
+    # Registre de vigilance : une alerte bloquante reste visible jusqu'ici
+    for al in c.registre:
+        src = f" ({al.source}{' p. ' + al.page if al.page else ''})" if al.source else ""
+        if al.statut == "Bloquant":
+            ajout("bloquant", "Vigilance", f"{al.intitule}{src} : alerte bloquante non levée" + (f", responsable {al.responsable}" if al.responsable else "") + ".")
+        elif al.memoire and al.statut in ("À vérifier", "À traiter", "En cours"):
+            ajout("a_verifier", "Vigilance → mémoire", f"{al.intitule}{src} : point à intégrer au mémoire, non traité.")
+    if c.registre and any(al.priorite == "haute" and al.statut in ("À vérifier", "À traiter") for al in c.registre):
+        n = sum(al.priorite == "haute" and al.statut in ("À vérifier", "À traiter") for al in c.registre)
+        ajout("a_verifier", "Vigilance", f"{n} point(s) prioritaire(s) repéré(s) dans le DCE pas encore vérifié(s).")
+    for livrable in c.a_revalider:
+        ajout("a_verifier", "Revalidation", f"Donnée amont modifiée : {livrable} à revoir et revalider.")
 
     # Validations humaines
     for etape in ("fiche", "quantites", "dpgf", "memoire"):
         if not a.est_valide(etape):
             ajout("a_verifier", "Validation", f"Étape « {etape} » non validée.")
+    for cle, libelle in VALIDATIONS_FINALES.items():
+        if not c.validations_finales.get(cle):
+            ajout("a_verifier", "Validation finale", f"{libelle} non approuvée.")
     c.controles = out
     return out
+
+
+VALIDATIONS_FINALES = {"technique": "Validation technique", "chiffrage": "Validation du chiffrage",
+                       "administrative": "Validation administrative"}
+
+
+def peut_declarer_pret(c, constats: list[Constat]) -> tuple[bool, str]:
+    """« Prêt à déposer » : impossible avec une anomalie bloquante, sauf dérogation formalisée."""
+    bloquants = [k for k in constats if k.gravite == "bloquant"]
+    manquantes = [v for k, v in VALIDATIONS_FINALES.items() if not c.validations_finales.get(k)]
+    if manquantes:
+        return False, "Validations manquantes : " + ", ".join(manquantes) + "."
+    if bloquants and not c.derogation:
+        return False, f"{len(bloquants)} anomalie(s) bloquante(s) non levée(s) et pas de dérogation."
+    return True, "Dérogation enregistrée : " + c.derogation if bloquants else "Aucune anomalie bloquante."
 
 
 def exporter_dossier(a: Affaire, modele_dpgf: str | Path | None = None) -> Path:
@@ -150,13 +198,33 @@ def exporter_dossier(a: Affaire, modele_dpgf: str | Path | None = None) -> Path:
     liste.write_text("\n".join(lignes), encoding="utf-8")
 
     zip_path = exp / f"Dossier_reponse_{c.id}.zip"
+    retenus = [l.numero for l in c.lots if l.retenu]
+    plusieurs = len(retenus) > 1
+    memoires = {}
+    if c.mode_memoire == "par_lot":
+        for lot in c.lots_memoire:
+            m = exp / f"Memoire_technique_lot{lot}.docx"
+            exporter_trame_docx(c, m, lot)
+            memoires[lot] = m
+    rattaches = {pr.fichier: pr for pr in c.pieces_reponse if pr.fichier}
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(liste, "00_Liste_de_controle.md")
         for f in sorted(a.dossier("pieces_reponse").iterdir()):
-            intitule, etape = _classer_fichier(f.name)
+            pr = rattaches.get(f.name)
+            if pr:
+                etape, lot = pr.etape, pr.lot
+            else:
+                _, etape = _classer_fichier(f.name)
+                lot = None
             rep = {"candidature": "01_Candidature", "offre": "02_Offre"}.get(etape, "03_Annexes")
+            if rep == "02_Offre" and lot and plusieurs:
+                rep += f"/Lot_{lot}"
             z.write(f, f"{rep}/{f.name}")
         z.write(dpgf, "02_Offre/DPGF.xlsx")
-        z.write(memoire, "02_Offre/Memoire_technique.docx")
+        if memoires:
+            for lot, m in memoires.items():
+                z.write(m, f"02_Offre/Lot_{lot}/{m.name}")
+        else:
+            z.write(memoire, "02_Offre/Memoire_technique.docx")
         z.write(analyse, "04_Travail_interne_ne_pas_deposer/Analyse_DCE.xlsx")
     return zip_path

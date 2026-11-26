@@ -26,7 +26,7 @@ _LIGNE = r"(?P<v>[^\n]{3,200})"
 
 MOTIFS: dict[str, list[re.Pattern]] = {
     "reference": [
-        re.compile(rf"(?:r[ée]f[ée]rence|n[°o]\s*de\s*(?:la\s*)?consultation|n[°o]\s*(?:du\s*)?march[ée]|march[ée]\s*n[°o])\s*(?:du marché|de la consultation)?\s*:?\s*(?P<v>[A-Z0-9][A-Z0-9_./\-]{{2,40}})", I),
+        re.compile(r"(?:r[ée]f[ée]rence|n[°o]\s*de\s*(?:la\s*)?consultation|n[°o]\s*(?:du\s*)?march[ée]|march[ée]\s*n[°o])\s*(?:du marché|de la consultation)?\s*:?\s*(?P<v>[A-Z0-9][A-Z0-9_./\-]{2,40})", I),
     ],
     "intitule": [
         re.compile(rf"^\s*(?:intitul[ée]\s*(?:de la consultation|du march[ée])?)\s*:\s*{_LIGNE}", I | re.M),
@@ -61,6 +61,15 @@ MOTIFS: dict[str, list[re.Pattern]] = {
     ],
     "contacts": [
         re.compile(r"(?P<v>[\w.+-]+@[\w-]+\.[\w.-]+)"),
+    ],
+    "architecte": [
+        re.compile(rf"^\s*(?:architecte|cabinet d'architecture)\s*(?:mandataire)?\s*(?:\([^)]*\))?\s*:\s*{_LIGNE}", I | re.M),
+    ],
+    "coordonnateur_sps": [
+        re.compile(rf"^\s*(?:coordonn?ateur (?:en mati[èe]re de )?(?:SPS|s[ée]curit[ée] et (?:de )?protection de la sant[ée])|CSPS)\s*(?:\([^)]*\))?\s*:\s*{_LIGNE}", I | re.M),
+    ],
+    "coordinateur_ssi": [
+        re.compile(rf"^\s*(?:coordonn?ateur|coordinateur)\s*(?:SSI|(?:du )?syst[èe]me de s[ée]curit[ée] incendie)\s*(?:\([^)]*\))?\s*:\s*{_LIGNE}", I | re.M),
     ],
     "duree_validite_offres": [
         re.compile(r"d[ée]lai de validit[ée] des offres[^.\n]{0,40}?(?P<v>\d{2,3}\s*jours)", I),
@@ -136,46 +145,68 @@ def _alertes(pieces: list[Piece]) -> list[str]:
     return vues
 
 
-CONSIGNE_LLM = """Tu aides un bureau d'études à remplir une fiche de renseignement d'appel d'offres.
-On te donne des extraits de pièces numérotées. Pour chaque champ demandé, réponds par
-{"champs": {"<nom>": {"valeur": "...", "fichier": "...", "page": N, "extrait": "citation exacte"}}}.
-L'extrait doit être recopié mot pour mot depuis le texte fourni (10 à 30 mots).
-Si l'information n'apparaît pas, mets "valeur": null. N'invente rien, ne déduis rien."""
+CONSIGNE_LLM = """Tu relis une fiche de renseignement d'appel d'offres remplie automatiquement, pour un bureau d'études.
+On te donne la fiche actuelle (champ : valeur, ou null si vide) et le texte des pièces (RC, AE, CCAP).
+Vérifie chaque champ dans les pièces :
+- valeur juste : ne la renvoie pas ;
+- valeur vide mais présente dans les pièces : renvoie-la ;
+- valeur fausse ou incomplète : renvoie la valeur corrigée.
+Format : {"champs": {"<nom>": {"valeur": "...", "fichier": "...", "page": N, "extrait": "citation exacte", "motif": "ajout | correction : raison courte"}}}
+L'extrait est recopié mot pour mot depuis le texte fourni (10 à 30 mots) et doit justifier la valeur.
+Ne fais aucun calcul : pas de date déduite, pas de durée convertie, pas de somme. Recopie les valeurs telles
+qu'elles sont écrites. N'invente rien ; dans le doute, ne renvoie pas le champ."""
 
 
-def _completer_llm(fiche: FicheRenseignement, pieces: list[Piece], llm: ClientLLM, journal: list[str]) -> None:
-    manquants = [k for k, c in fiche.champs().items() if c.statut == Statut.A_VERIFIER]
-    if not manquants or isinstance(llm, AucunLLM):
+def _relire_llm(fiche: FicheRenseignement, pieces: list[Piece], llm: ClientLLM, journal: list[str]) -> None:
+    """L'IA relit toute la fiche : elle complète les champs vides et corrige les valeurs fausses.
+
+    Garde-fous : chaque proposition doit citer un extrait retrouvé mot pour mot dans la pièce ; une valeur
+    corrigée garde l'ancienne (valeur_avant) et reste « à vérifier » jusqu'à validation ; les champs déjà
+    corrigés ou validés par SIE ne sont jamais touchés."""
+    if isinstance(llm, AucunLLM):
+        return
+    champs = fiche.champs()
+    modifiables = {k: c for k, c in champs.items() if c.statut not in (Statut.CORRIGE, Statut.VALIDE)}
+    if not modifiables:
         return
     pertinentes = pieces_par_priorite(pieces, [TypePiece.RC, TypePiece.AE, TypePiece.CCAP])
+    limite = getattr(llm, "contexte_max", 60000) or 60000
     morceaux, taille = [], 0
     for p in pertinentes:
         for page in p.pages:
             bloc = f"\n=== {p.fichier} | page {page.numero} ===\n{page.texte}"
-            if taille + len(bloc) > min(60000, getattr(llm, "contexte_max", 60000) or 60000):
+            if taille + len(bloc) > limite:
                 break
             morceaux.append(bloc)
             taille += len(bloc)
     if not morceaux:
         return
-    rep = llm.json(CONSIGNE_LLM, f"Champs à trouver : {', '.join(manquants)}\n" + "".join(morceaux))
+    etat = "\n".join(f"{k} : {c.valeur if c.valeur else 'null'}" for k, c in modifiables.items())
+    rep = llm.json(CONSIGNE_LLM, f"Fiche actuelle :\n{etat}\n\nPièces :" + "".join(morceaux))
     if not rep or not isinstance(rep.get("champs"), dict):
-        journal.append(f"F1 : le LLM ({llm.nom}) n'a pas renvoyé de réponse exploitable.")
+        journal.append(f"Fiche : l'IA ({llm.nom}) n'a pas renvoyé de réponse exploitable.")
         return
     for nom, r in rep["champs"].items():
-        if nom not in manquants or not isinstance(r, dict) or not r.get("valeur"):
+        if nom not in modifiables or not isinstance(r, dict) or not r.get("valeur"):
+            continue
+        avant = modifiables[nom]
+        nouvelle = str(r["valeur"]).strip()
+        if avant.valeur and normaliser(avant.valeur) == normaliser(nouvelle):
             continue
         piece = next((p for p in pertinentes if p.fichier == r.get("fichier")), None)
-        if piece is None:
-            journal.append(f"F1 : champ « {nom} » proposé par le LLM sans fichier valide, ignoré.")
-            continue
         page = r.get("page") if isinstance(r.get("page"), int) else None
-        src = Source(piece_id=piece.id, fichier=piece.fichier, page=page, extrait=str(r.get("extrait", "")))
-        if extrait_present(src, pieces):
-            setattr(fiche, nom, Champ(valeur=str(r["valeur"]), source=src, statut=Statut.EXTRAIT, methode="llm"))
+        src = Source(piece_id=piece.id, fichier=piece.fichier, page=page, extrait=str(r.get("extrait", ""))) if piece else None
+        if src is None or not extrait_present(src, pieces):
+            journal.append(f"Fiche : proposition de l'IA pour « {nom} » ignorée (citation introuvable dans les pièces).")
+            continue
+        motif = str(r.get("motif", "")).strip()
+        if avant.valeur:
+            setattr(fiche, nom, Champ(valeur=nouvelle, source=src, statut=Statut.A_VERIFIER, methode="llm_correction",
+                                      valeur_avant=avant.valeur))
+            journal.append(f"Fiche : « {nom} » corrigé par l'IA, à valider (avant : « {avant.valeur} »). {motif}".strip())
         else:
-            setattr(fiche, nom, Champ(valeur=str(r["valeur"]), source=src, statut=Statut.A_VERIFIER, methode="llm"))
-            journal.append(f"F1 : citation du LLM introuvable pour « {nom} », champ laissé à vérifier.")
+            setattr(fiche, nom, Champ(valeur=nouvelle, source=src, statut=Statut.EXTRAIT, methode="llm"))
+            journal.append(f"Fiche : « {nom} » complété par l'IA. {motif}".strip())
 
 
 def construire_fiche(pieces: list[Piece], llm: ClientLLM | None = None, journal: list[str] | None = None) -> tuple[FicheRenseignement, list[Lot]]:
@@ -206,10 +237,17 @@ def construire_fiche(pieces: list[Piece], llm: ClientLLM | None = None, journal:
         fiche.visite_obligatoire = Champ(valeur="oui" if normaliser(t_obl.valeur) == "obligatoire" else "non",
                                          source=t_obl.source, statut=Statut.EXTRAIT)
 
+    t_rdv = premier(ordonnees, [re.compile(r"(?P<v>visites? (?:individuelles? )?(?:sur|par) rendez-vous)", I)])
+    if t_rdv:
+        fiche.visite_sur_rdv = Champ(valeur="oui", source=t_rdv.source, statut=Statut.EXTRAIT)
+    t_sig = premier(ordonnees, [re.compile(r"(?P<v>(?:attestation|certificat|fiche) de visite[^.\n]{0,80}(?:sign[ée]e?|jointe?|remise?|fournie?))", I)])
+    if t_sig:
+        fiche.fiche_visite_signee = Champ(valeur="oui", source=t_sig.source, statut=Statut.EXTRAIT)
+
     if fiche.intitule.statut == Statut.A_VERIFIER and fiche.objet.statut == Statut.EXTRAIT:
         fiche.intitule = fiche.objet.model_copy()
 
-    _completer_llm(fiche, pieces, llm, journal)
+    _relire_llm(fiche, pieces, llm, journal)
     fiche.alertes = _alertes(pieces)
     lots = extraire_lots(pieces)
     if not lots or lots[0].source is None:

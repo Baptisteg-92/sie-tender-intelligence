@@ -3,6 +3,8 @@
     python -m sie_tender indexer  <dossier_archives>  --index archives.json
     python -m sie_tender analyser <dce.zip|dossier>  [--index archives.json] [--sortie resultats/]
     python -m sie_tender chercher "<requête>" --index archives.json
+    python -m sie_tender synchroniser [--espace affaires] [--index archives_index.json] [--forcer]
+        (à planifier chaque nuit, ex. 02:00, dans le planificateur de tâches du serveur SIE)
 """
 from __future__ import annotations
 
@@ -32,7 +34,22 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--index", default="archives_index.json")
     c.add_argument("-k", type=int, default=5)
 
+    s = sub.add_parser("synchroniser", help="mettre à jour l'index depuis le partage configuré dans Paramètres")
+    s.add_argument("--espace", default="affaires")
+    s.add_argument("--index", default="archives_index.json")
+    s.add_argument("--forcer", action="store_true")
+
     args = ap.parse_args(argv)
+    if args.cmd == "synchroniser":
+        from pathlib import Path
+
+        from .referentiels import Referentiels
+        from .synchro import synchroniser
+        chemin = Path(args.espace) / "_referentiels.json"
+        r = Referentiels.charger(chemin)
+        print(synchroniser(r.bibliotheque, args.index, args.forcer))
+        Referentiels.charger(chemin).model_copy(update={"bibliotheque": r.bibliotheque}).sauver(chemin)
+        return 0 if r.bibliotheque.dernier_resultat != "échec" else 1
     if args.cmd == "indexer":
         b = Bibliotheque.indexer(args.archives)
         b.sauver(args.index)

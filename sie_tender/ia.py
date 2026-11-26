@@ -13,7 +13,7 @@ from rank_bm25 import BM25Okapi
 from .f6_archives import jetons
 from .llm import ClientLLM, PageDoc, Reponse
 from .models import CitationIA, Consultation, Piece, ReponseIA, SectionMemoire, TypePiece
-from .texte import normaliser
+from .texte import nombres_absents, normaliser
 
 _PRIORITE = {TypePiece.RC: 0, TypePiece.AE: 1, TypePiece.CCAP: 2, TypePiece.CCTP: 3, TypePiece.ANNEXE: 4}
 
@@ -22,6 +22,8 @@ Règles impératives :
 - Appuie-toi uniquement sur les documents fournis. N'invente aucune date, aucun montant, aucun nom, aucune référence.
 - Si l'information n'y figure pas, écris « non trouvé dans le DCE ».
 - La décision GO / NO GO, les prix et les marges appartiennent à SIE : ne les propose pas.
+- Ne fais aucun calcul (somme, durée, date déduite, conversion, pourcentage) : recopie les nombres tels qu'ils sont
+  écrits dans les documents. Si un calcul serait utile, écris [CALCUL À FAIRE PAR L'OUTIL : ce qu'il faut calculer].
 - Réponds en français, de façon sobre et factuelle, sans superlatifs."""
 
 
@@ -63,11 +65,19 @@ def verifier(citations, pieces: list[Piece]) -> list[CitationIA]:
     return out
 
 
+def avertissements_nombres(texte: str, sources: list[str]) -> list[str]:
+    absents = nombres_absents(texte, sources)
+    if not absents:
+        return []
+    return [f"Nombre(s) absent(s) des documents, peut-être calculé(s) ou inventé(s) par l'IA : {', '.join(absents[:10])}. À vérifier."]
+
+
 def _reponse(type_: str, question: str, rep: Reponse, moteur: ClientLLM, pieces: list[Piece]) -> ReponseIA:
     if rep.erreur:
         raise RuntimeError(rep.erreur)
+    sources = [pg.texte for p in pieces for pg in p.pages]
     return ReponseIA(type=type_, question=question, texte=rep.texte, citations=verifier(rep.citations, pieces),
-                     moteur=moteur.nom, cout_usd=round(rep.cout_usd, 4))
+                     moteur=moteur.nom, cout_usd=round(rep.cout_usd, 4), avertissements=avertissements_nombres(rep.texte, sources))
 
 
 def _exiger(moteur: ClientLLM) -> None:
@@ -108,11 +118,35 @@ les extraits d'anciens mémoires de l'entreprise et les exigences du DCE fournis
 - Rends uniquement le texte de la section, en paragraphes, sans titre."""
 
 
-def brouillon_section(c: Consultation, section: SectionMemoire, moteur: ClientLLM) -> ReponseIA:
+def _brouillon_par_rag(rag, c: Consultation, section: SectionMemoire, exigences) -> ReponseIA:
+    lots = [l for l in c.lots if l.numero == section.lot] if section.lot else [l for l in c.lots if l.retenu]
+    activites = sorted({a for l in lots for a in l.activites})
+    d = rag.rediger({"titre": section.titre[:300], "critere": section.critere, "ponderation": section.ponderation,
+                     "exigences": [e.texte for e in exigences], "lot": section.lot, "activites": activites,
+                     "objet_marche": c.fiche.intitule.valeur or c.fiche.objet.valeur or ""})
+    if d.get("statut") == "erreur":
+        raise RuntimeError(d.get("erreur") or "Le service RAG n'a pas pu rédiger ce brouillon.")
+    texte = d.get("texte") or ""
+    if d.get("statut") == "passages_seuls" and d.get("erreur"):
+        texte = texte or f"[Pas de brouillon : {d['erreur']}]"
+    return ReponseIA(type="memoire", question=f"Brouillon : {section.titre}", texte=texte, moteur=f"rag:{d.get('moteur', '?')}",
+                     cout_usd=round(d.get("cout_usd") or 0.0, 4), avertissements=list(d.get("avertissements") or []),
+                     citations=[CitationIA(fichier=x["fichier"], page=x.get("page"), extrait=x["extrait"], verifiee=bool(x["verifiee"]))
+                                for x in d.get("citations") or []])
+
+
+def brouillon_section(c: Consultation, section: SectionMemoire, moteur: ClientLLM, rag=None) -> ReponseIA:
+    """Brouillon d'une section. Si le service RAG est branché (SIE_RAG_URL), c'est lui qui rédige : un seul chemin
+    vers l'IA pour les archives, avec ses garde-fous. Sinon, rédaction ici à partir des passages proposés."""
     _exiger(moteur)
     critere = section.titre + (f" ({section.ponderation:g} % de la note)" if section.ponderation else "")
     mots = set(jetons(section.titre))
     exigences = [e for e in c.exigences if mots & set(jetons(e.texte))][:15]
+    if rag is None:
+        from .rag_distant import BibliothequeRAG
+        rag = BibliothequeRAG.depuis_env()
+    if rag is not None:
+        return _brouillon_par_rag(rag, c, section, exigences)
     passages = section.passages_proposes[:5]
     contenu = [f"Consultation : {c.fiche.intitule.valeur or c.fiche.objet.valeur or 'non renseignée'}",
                f"Section à rédiger : {critere}", "", "Exigences du DCE liées à cette section :"]
@@ -124,7 +158,8 @@ def brouillon_section(c: Consultation, section: SectionMemoire, moteur: ClientLL
     rep = moteur.texte(CONSIGNE_MEMOIRE, "\n".join(contenu))
     if rep.erreur:
         raise RuntimeError(rep.erreur)
+    sources = [pg.texte for p in c.pieces for pg in p.pages] + [pa.texte for pa in passages] + [section.contenu or ""]
     return ReponseIA(type="memoire", question=f"Brouillon : {section.titre}", texte=rep.texte, moteur=moteur.nom,
-                     cout_usd=round(rep.cout_usd, 4),
+                     cout_usd=round(rep.cout_usd, 4), avertissements=avertissements_nombres(rep.texte, sources),
                      citations=[CitationIA(fichier=f"archives/{pa.affaire}", page=pa.source.page, extrait=pa.texte[:200], verifiee=True)
                                 for pa in passages])

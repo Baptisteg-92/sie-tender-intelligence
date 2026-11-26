@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .f3_quantites import _colonnes, _nombre
 from .f6_archives import jetons
-from .models import Consultation, Constat, Devis, LigneDevis, PosteDPGF
+from .models import Consultation, Constat, Devis, LigneDevis, PosteDPGF, SelectionPrix
 from .texte import normaliser
 
 UNITES_EQUIV = {"u": "u", "un": "u", "unite": "u", "pce": "u", "piece": "u", "ens": "ens", "ensemble": "ens",
@@ -78,14 +78,13 @@ def _prix(s: str) -> float | None:
 
 
 def _lire_pdf(chemin: Path) -> list[LigneDevis]:
-    import pymupdf
+    from .pdf import lire_pdf
 
     out = []
-    with pymupdf.open(chemin) as doc:
-        for page in doc:
-            for m in _LIGNE_PDF.finditer(page.get_text("text")):
-                out.append(LigneDevis(designation=m.group("des").strip(), unite=m.group("u"),
-                                      quantite=_nombre(m.group("qte")), prix_unitaire=_prix(m.group("pu"))))
+    for _, texte, _ in lire_pdf(chemin)[0]:
+        for m in _LIGNE_PDF.finditer(texte):
+            out.append(LigneDevis(designation=m.group("des").strip(), unite=m.group("u"),
+                                  quantite=_nombre(m.group("qte")), prix_unitaire=_prix(m.group("pu"))))
     return out
 
 
@@ -148,20 +147,42 @@ def _prix_vente(prix_materiel: float | None, temps_h: float | None, c: Consultat
     return round(debourse * (1 + k.frais_generaux / 100) * (1 + k.aleas / 100) * (1 + k.marge / 100), 2)
 
 
-def construire_dpgf(c: Consultation, temps_pose: dict[str, float] | None = None) -> list[PosteDPGF]:
-    """Un poste par ligne de quantité ; le prix d'achat retenu est le moins cher des devis associés."""
-    temps_pose = temps_pose or {p.ligne_quantite_id: p.temps_pose_h for p in c.dpgf if p.temps_pose_h is not None}
-    offres: dict[str, list[tuple[float, Devis, LigneDevis]]] = {}
+def offres_par_poste(c: Consultation) -> dict[str, list[tuple[Devis, LigneDevis]]]:
+    """Toutes les offres reçues pour chaque poste du métré (lignes de devis associées et chiffrées)."""
+    offres: dict[str, list[tuple[Devis, LigneDevis]]] = {}
     for d in c.devis:
         for l in d.lignes:
             if l.ligne_quantite_id and l.prix_unitaire is not None:
-                offres.setdefault(l.ligne_quantite_id, []).append((l.prix_unitaire, d, l))
+                offres.setdefault(l.ligne_quantite_id, []).append((d, l))
+    return offres
+
+
+def retenir(c: Consultation, ligne_quantite_id: str, devis_id: str | None, motif: str | None = None,
+            validateur: str | None = None) -> None:
+    """Enregistre le choix manuel de SIE pour un poste (devis_id None : retire le choix)."""
+    c.selections = [s for s in c.selections if s.ligne_quantite_id != ligne_quantite_id]
+    if devis_id:
+        c.selections.append(SelectionPrix(ligne_quantite_id=ligne_quantite_id, devis_id=devis_id, motif=motif or None,
+                                          validateur=validateur))
+
+
+def construire_dpgf(c: Consultation, temps_pose: dict[str, float] | None = None) -> list[PosteDPGF]:
+    """Un poste par ligne de quantité ; le prix d'achat est celui du devis choisi par SIE pour ce poste.
+
+    Sans choix enregistré, le prix reste vide même si des offres existent : l'outil ne retient
+    jamais de lui-même le moins-disant (cahier des charges, F5).
+    """
+    temps_pose = temps_pose or {p.ligne_quantite_id: p.temps_pose_h for p in c.dpgf if p.temps_pose_h is not None}
+    offres = offres_par_poste(c)
+    choix = {s.ligne_quantite_id: s.devis_id for s in c.selections}
     postes = []
     for q in c.quantites:
         p = PosteDPGF(ligne_quantite_id=q.id, lot=q.lot, code=q.code, designation=q.designation, unite=q.unite,
                       quantite=q.quantite, temps_pose_h=temps_pose.get(q.id))
-        if q.id in offres:
-            pu, d, l = min(offres[q.id], key=lambda x: x[0])
+        retenue = next(((d, l) for d, l in offres.get(q.id, []) if d.id == choix.get(q.id)), None)
+        if retenue:
+            d, l = retenue
+            pu = l.prix_unitaire
             p.prix_materiel, p.devis_id, p.fournisseur = pu, d.id, d.fournisseur
             if unite_norm(l.unite) and unite_norm(q.unite) and unite_norm(l.unite) != unite_norm(q.unite):
                 p.alertes.append(f"Écart d'unité : devis en {l.unite}, métré en {q.unite}")
@@ -169,6 +190,8 @@ def construire_dpgf(c: Consultation, temps_pose: dict[str, float] | None = None)
                 p.alertes.append(f"Quantité du devis ({l.quantite:g}) inférieure au métré ({q.quantite:g})")
             if pu <= 0:
                 p.alertes.append("Prix unitaire nul ou négatif")
+        elif q.id in offres:
+            p.alertes.append(f"{len(offres[q.id])} offre(s) reçue(s) : fournisseur à choisir par SIE")
         elif not (q.famille or "").lower().startswith("main-d"):
             p.alertes.append("Poste sans prix fournisseur")
         if q.quantite is None:
@@ -177,14 +200,15 @@ def construire_dpgf(c: Consultation, temps_pose: dict[str, float] | None = None)
         if p.prix_unitaire_vente is not None and p.quantite is not None:
             p.total = round(p.prix_unitaire_vente * p.quantite, 2)
         postes.append(p)
-    # Prix d'achat anormalement éloigné de la médiane des devis sur le même poste
+    # Prix anormalement éloignés entre devis sur le même poste
     for qid, lst in offres.items():
         if len(lst) >= 2:
-            prix = sorted(x[0] for x in lst)
+            prix = sorted(l.prix_unitaire for _, l in lst)
             med = prix[len(prix) // 2]
             if med and (prix[-1] > 3 * med or prix[0] < med / 3):
-                poste = next(p for p in postes if p.ligne_quantite_id == qid)
-                poste.alertes.append(f"Écart important entre devis ({prix[0]:g} à {prix[-1]:g} €)")
+                poste = next((p for p in postes if p.ligne_quantite_id == qid), None)
+                if poste:
+                    poste.alertes.append(f"Écart important entre devis ({prix[0]:g} à {prix[-1]:g} €)")
     return postes
 
 
@@ -234,6 +258,7 @@ def exporter_dpgf(c: Consultation, chemin: str | Path, modele: str | Path | None
                         cell.fill = jaune
                     restants.remove(best)
                 break
+        _suivi_fournisseurs(wb, c)
         wb.save(chemin)
         if restants:
             c.journal.append(f"F5 : {len(restants)} postes non retrouvés dans le modèle de DPGF SIE.")
@@ -272,5 +297,29 @@ def exporter_dpgf(c: Consultation, chemin: str | Path, modele: str | Path | None
     ws.cell(row=ws.max_row, column=3).font = Font(bold=True)
     for col, w in zip("ABCDEFGHIJKL", (6, 8, 45, 7, 9, 12, 16, 10, 12, 12, 12, 50)):
         ws.column_dimensions[col].width = w
+    _suivi_fournisseurs(wb, c)
     wb.save(chemin)
     return chemin
+
+
+def _suivi_fournisseurs(wb, c: Consultation) -> None:
+    """Feuille « Suivi fournisseurs » : offres reçues par poste et choix motivé de SIE."""
+    from openpyxl.styles import Font
+
+    if "Suivi fournisseurs" in wb.sheetnames:
+        del wb["Suivi fournisseurs"]
+    ws = wb.create_sheet("Suivi fournisseurs")
+    ws.append(["N°", "Désignation", "Fournisseur", "PU HT", "Retenu", "Motif", "Choisi par", "Date"])
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    offres = offres_par_poste(c)
+    choix = {s.ligne_quantite_id: s for s in c.selections}
+    for q in c.quantites:
+        for d, l in offres.get(q.id, []):
+            s = choix.get(q.id)
+            pris = s is not None and s.devis_id == d.id
+            ws.append([q.code, q.designation, d.fournisseur, l.prix_unitaire, "oui" if pris else "",
+                       (s.motif or "") if pris else "", (s.validateur or "") if pris else "",
+                       s.date.strftime("%d/%m/%Y") if pris else ""])
+    for col, w in zip("ABCDEFGH", (8, 45, 24, 10, 8, 40, 16, 12)):
+        ws.column_dimensions[col].width = w

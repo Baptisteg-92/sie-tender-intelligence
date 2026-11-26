@@ -108,3 +108,19 @@ def test_espace_de_travail(monkeypatch):
     m.client = NS(beta=NS(messages=Refus()), messages=Refus())
     r = m.texte("consigne", "contenu")
     assert "ANTHROPIC_WORKSPACE_ID" in r.erreur
+
+
+def test_openai_texte_cite(monkeypatch):
+    import json as _json
+    from types import SimpleNamespace as NS
+
+    from sie_tender.llm import OpenAILLM, PageDoc
+    monkeypatch.setenv("SIE_LLM_EXTERNE_AUTORISE", "oui")
+    sortie = _json.dumps({"reponse": "Visite obligatoire.", "citations": [{"page": 1, "extrait": "la visite du site est obligatoire"}]})
+    rep = NS(status="completed", output_text=sortie, output=[NS(content=[NS(type="output_text")])],
+             usage=NS(input_tokens=1000, output_tokens=100, input_tokens_details=NS(cached_tokens=0)))
+    appels = []
+    client = NS(responses=NS(create=lambda **kw: appels.append(kw) or rep))
+    r = OpenAILLM("gpt-6.2-sol", client=client).texte_cite("c", "Visite ?", [PageDoc("RC.pdf", 2, "la visite du site est obligatoire")])
+    assert r.texte == "Visite obligatoire." and r.citations[0].fichier == "RC.pdf" and r.citations[0].page == 2
+    assert appels[0]["store"] is False and round(r.cout_usd, 4) == 0.003
