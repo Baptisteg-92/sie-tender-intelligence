@@ -6,8 +6,8 @@ mémoire. Il peut aussi préparer un brouillon de section qui cite ses sources.
 
 - Tout tourne sur le serveur de SIE : lecture du partage Windows, OCR, découpage, index,
   recherche.
-- L'IA de rédaction est la seule brique qui peut sortir. Elle est coupée par défaut et ne
-  s'active qu'après l'accord écrit de SIE. Même activée, elle ne reçoit que les quelques
+- L'IA de rédaction est la seule brique qui peut sortir. Elle est coupée par défaut. SIE a donné
+  son accord de principe le 26/11/2026 pour l'API OpenAI, avec un compte ouvert à son nom. Même activée, elle ne reçoit que les quelques
   passages retenus pour la section en cours, et jamais de prix.
 - Le bureau d'études relit et valide tout. Le brouillon reste « proposé ».
 
@@ -31,7 +31,8 @@ entrepot.py     PostgreSQL + pgvector (serveur)  |  SQLite (poste, pilote, tests
         ▼
 recherche.py    mots + sens → fusion RRF → (reclassement) → diversité par affaire, doublons retirés
 redaction.py    passages autorisés et envoyables → IA de rédaction → citations revérifiées → journal
-redacteurs.py   aucun (défaut) | bedrock | anthropic | ollama (modèle local)
+redacteurs.py   aucun (défaut) | openai (choix SIE) | anthropic | bedrock | ollama (modèle local)
+comparaison.py  mêmes sections et mêmes passages pour deux IA, grille de notation à l'aveugle
         ▼
 service.py      HTTP interne : /sync, /sync/status, /search, /similaires, /draft, /documents/{id}, /journal, /health
 ```
@@ -52,7 +53,50 @@ python -m pytest rag_sie/tests -q
 L'encodeur `hachage` ne demande aucun téléchargement. Il rapproche les mots de même racine, pas
 les synonymes. En production, il faut utiliser `bge-m3`, présenté plus bas.
 
+## IA de rédaction : OpenAI, et comparaison avec Claude
+
+Réglages sur le serveur (fichier `configuration.env`) :
+
+```
+SIE_LLM=openai
+SIE_LLM_MODELE=gpt-6.2-sol          # gpt-6.2-astra pour les sections difficiles, plus cher (×4)
+SIE_LLM_EXTERNE_AUTORISE=oui
+OPENAI_API_KEY=sk-proj-...          # clé du projet OpenAI de SIE, sur le serveur seulement
+# SIE_OPENAI_URL=https://eu.api.openai.com/v1   si OpenAI accorde un projet « Europe »
+```
+
+L'adaptateur utilise l'API Responses avec une sortie JSON imposée (texte + citations), `store=False`.
+Les extraits cités sont revérifiés mot pour mot dans les passages envoyés, comme pour Claude. Les noms
+et tarifs des modèles ont été relevés le 26/11/2026 : à revérifier à l'ouverture du compte.
+
+Pour comparer OpenAI et Claude sur les documents de SIE (même recherche, mêmes passages, seule l'IA change) :
+
+```bash
+python -m rag_sie comparer sections.json --moteurs openai anthropic --sortie comparaison
+# ou deux modèles d'un même fournisseur : --moteurs openai:gpt-6.2-sol openai:gpt-6.2-astra
+```
+
+On obtient `grille_notation.md`, où les brouillons sont anonymisés (A/B tirés au hasard) pour que le
+bureau d'études les note sans savoir qui les a écrits, et `comparaison.json` avec le coût, la durée,
+les citations vérifiées et le nombre de `[À COMPLÉTER]` de chaque IA.
+
 ## Installation sur le serveur SIE
+
+Serveur annoncé par SIE : Lenovo ThinkSystem ST250 V2, Xeon E-2378 (8 cœurs), 64 Go, Windows Server
+2025, 2 × 2,4 To SAS + NAS Synology 2 × 6 To, pas de carte graphique. C'est suffisant : bge-m3 tourne
+sur le processeur (quelques Go de mémoire), et la rédaction se fait chez OpenAI.
+
+Le script `windows/installer.ps1` fait les étapes 1, 2, 6 et 7 ci-dessous (dossiers, environnement
+Python, tâches planifiées, droits sur le fichier de configuration). Il n'a pas encore été exécuté sur
+le serveur : à dérouler la première fois avec le prestataire informatique de SIE.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File rag_sie\windows\installer.ps1 -Racine D:\SIE\rag -CompteService "SIE\svc-rag"
+```
+
+Périmètre : SIE a décidé d'indexer les archives de 2022 à 2026 (`SIE_RAG_ANNEES=2022-2026`). Un
+document dont l'année (nom du dossier d'affaire ou `affaire.json`) est hors période est écarté sans
+être lu ; un document sans année est gardé et signalé dans les remarques.
 
 1. **Python 3.12** et `pip install -r rag_sie/requirements.txt`.
 2. **Recherche par le sens** :
@@ -115,7 +159,7 @@ Le module F6 de l'outil actuel peut aussi interroger le service. Il suffit de d�
 | Exigence (spécifications du 10/11/2026) | Réponse dans rag_sie |
 |---|---|
 | 6.1 Données, index et traitements sur l'infrastructure SIE | Lecture, OCR, découpage, vecteurs, index et recherche en local ; modèles chargés depuis le disque |
-| 6.1 Aucune transmission à une API externe | Coupée par défaut (`SIE_LLM=aucun`). L'API validée le 20/11 n'est active qu'avec `SIE_LLM_EXTERNE_AUTORISE=oui`, et seulement pour les passages retenus |
+| 6.1 Aucune transmission à une API externe | Remplacé par l'accord de SIE du 26/11/2026 (API OpenAI). Coupée par défaut ; active seulement avec `SIE_LLM_EXTERNE_AUTORISE=oui`, et seulement pour les passages retenus, jamais les prix |
 | 6.1 Partage Windows en lecture seule, chemin UNC | Aucun accès en écriture au partage ; `SIE_RAG_ARCHIVES=\\serveur\partage` |
 | 6.2 Synchronisation quotidienne, heure configurable | Tâche planifiée ou `SIE_RAG_HEURE_SYNCHRO` |
 | 6.2 Bouton « Synchroniser maintenant » pour les profils autorisés | `POST /sync`, réservé à `SIE_RAG_GROUPES_ADMIN` |
@@ -156,3 +200,7 @@ avec et sans reclasseur, avant de régler quoi que ce soit.
 - La règle des mémoires « validés » est provisoire, en attente de SIE.
 - Les fichiers `.doc` (Word ancien) et `.msg` ne sont pas lus. Il faudra les convertir ou
   ajouter LibreOffice en mode sans écran si l'inventaire montre qu'ils sont nombreux.
+- L'adaptateur OpenAI est testé avec un faux client (format de la requête, citations, coût, refus,
+  réponse coupée), pas encore avec une vraie clé : premier essai à faire avec le compte de SIE, sur
+  les archives fictives (`python -m rag_sie.demo`), avant toute archive réelle.
+- Le script `windows/installer.ps1` n'a pas encore tourné sur Windows Server 2025.

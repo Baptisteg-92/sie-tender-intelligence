@@ -133,6 +133,12 @@ def empreinte(chemin: Path) -> str:
     return h.hexdigest()
 
 
+def hors_periode(annee: int | None, periode: tuple[int, int] | None) -> str:
+    if not periode or annee is None or periode[0] <= annee <= periode[1]:
+        return ""
+    return f"hors période {periode[0]}-{periode[1]} ({annee})"
+
+
 def _priorite(rel: str) -> tuple:
     """Mémoires d'abord, puis le reste : si la nuit ne suffit pas, l'essentiel est déjà indexé."""
     n = rel.lower()
@@ -173,6 +179,13 @@ class Indexeur:
         if st.st_size > TAILLE_MAX_MO * 1024 * 1024:
             doc.remarque = f"fichier de plus de {TAILLE_MAX_MO} Mo non lu"
             return doc, [], []
+        if self.config.annees:
+            # L'année vient du dossier de l'affaire (ou de affaire.json) : on l'obtient sans lire le fichier,
+            # pour ne pas passer à l'OCR des documents hors période.
+            hors = hors_periode(metadonnees(racine, p, "", self.config.motif_valides).annee, self.config.annees)
+            if hors:
+                doc.exclu = hors
+                return doc, [], []
         doc.comptes = self.droits.comptes(p)
         lu = lire(p)
         doc.ocr, doc.remarque = lu.ocr, lu.remarque
@@ -185,6 +198,8 @@ class Indexeur:
         doc.affaire, doc.annee, doc.type_doc, doc.activites = m.affaire, m.annee, m.type_doc, m.activites
         doc.type_ouvrage, doc.valide, doc.resultat, doc.titre = m.type_ouvrage, m.valide, m.resultat, m.titre
         doc.envoyable = envoyable(rel, m.type_doc)
+        if self.config.annees and m.annee is None:
+            doc.remarque = doc.remarque or "année inconnue : gardé, à vérifier (période " + "-".join(map(str, self.config.annees)) + ")"
         if not lu.lisible:
             doc.remarque = doc.remarque or "aucun texte extrait"
             return doc, [], []

@@ -12,8 +12,9 @@ pytest>=8.0
 # Serveur SIE : base PostgreSQL + pgvector
 psycopg[binary]>=3.1
 
-# IA de rédaction par API (Bedrock ou Anthropic), utilisée seulement si SIE_LLM_EXTERNE_AUTORISE=oui
-anthropic[bedrock]>=2.12
+# IA de rédaction par API, utilisée seulement si SIE_LLM_EXTERNE_AUTORISE=oui
+openai>=3.60            # choix de SIE (26/11/2026)
+anthropic[bedrock]>=2.12  # Claude, pour la comparaison prévue par SIE
 
 # Recherche par le sens en production (bge-m3, reclasseur) : environ 2 Go avec PyTorch pour processeur.
 # Sur le serveur : pip install --index-url https://download.pytorch.org/whl/cpu torch

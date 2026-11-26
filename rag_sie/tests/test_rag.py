@@ -22,8 +22,8 @@ from rag_sie.entrepot import Filtre
 from rag_sie.evaluation import evaluer
 from rag_sie.exclusions import envoyable, raison_exclusion
 from rag_sie.moteur import Moteur
-from rag_sie.redacteurs import (AucunRedacteur, BedrockRedacteur, Citation, ErreurAutorisation, Passage, Reponse,
-                                _Claude)
+from rag_sie.redacteurs import (AucunRedacteur, BedrockRedacteur, Citation, ErreurAutorisation, OpenAIRedacteur, Passage,
+                                Reponse, _Claude, redacteur)
 from rag_sie.redaction import DemandeSection, rediger
 
 EHPAD, GYMNASE, CONFIDENTIEL = AFFAIRES[1]["dossier"], AFFAIRES[2]["dossier"], AFFAIRES[9]["dossier"]
@@ -283,6 +283,85 @@ def test_adaptateur_claude_citations():
     assert r.texte == "Nous maintenons le SSI." and r.citations[0].passage == 0
     assert round(r.cout_usd, 4) == 0.033
     assert appels[0]["messages"][0]["content"][0]["citations"] == {"enabled": True}
+
+
+def _faux_openai(sortie, status="completed", contenu=None):
+    rep = SimpleNamespace(status=status, output_text=sortie,
+                          output=[SimpleNamespace(type="message", content=contenu or [SimpleNamespace(type="output_text")])],
+                          usage=SimpleNamespace(input_tokens=10_000, output_tokens=1_000,
+                                                input_tokens_details=SimpleNamespace(cached_tokens=2_000)))
+    appels = []
+    return SimpleNamespace(responses=SimpleNamespace(create=lambda **kw: appels.append(kw) or rep)), appels
+
+
+def test_adaptateur_openai(monkeypatch):
+    monkeypatch.setenv("SIE_LLM_EXTERNE_AUTORISE", "oui")
+    sortie = json.dumps({"texte": "Nous maintenons le SSI. [À COMPLÉTER : effectif]",
+                         "citations": [{"passage": 1, "extrait": "le SSI reste en service"}, {"passage": 9, "extrait": "hors liste"}]})
+    client, appels = _faux_openai(sortie)
+    o = OpenAIRedacteur("gpt-6.2-sol", client=client)
+    r = o.rediger("consigne", "question", [Passage("1", "affaire/memoire.docx p.2", "le SSI reste en service")])
+    assert r.erreur is None and r.texte.startswith("Nous maintenons")
+    assert [c.passage for c in r.citations] == [0]                             # numéro hors liste ignoré
+    assert round(r.cout_usd, 4) == 0.0264                                      # 8 000 × 2 $ + 2 000 × 0,2 $ + 1 000 × 10 $
+    a = appels[0]
+    assert a["store"] is False and a["model"] == "gpt-6.2-sol"
+    assert a["text"]["format"]["strict"] is True and "[1] affaire/memoire.docx p.2" in a["input"]
+
+
+def test_adaptateur_openai_refus_et_coupure(monkeypatch):
+    monkeypatch.setenv("SIE_LLM_EXTERNE_AUTORISE", "oui")
+    client, _ = _faux_openai("", contenu=[SimpleNamespace(type="refusal", refusal="non")])
+    assert "refusé" in OpenAIRedacteur(client=client).rediger("c", "q", [Passage("1", "t", "x")]).erreur
+    client, _ = _faux_openai('{"texte": "début", "cit', status="incomplete")
+    assert "interrompue" in OpenAIRedacteur(client=client).rediger("c", "q", [Passage("1", "t", "x")]).erreur
+    client, _ = _faux_openai(json.dumps({"texte": "début", "citations": []}), status="incomplete")
+    assert "[À COMPLÉTER : brouillon interrompu" in OpenAIRedacteur(client=client).rediger("c", "q", [Passage("1", "t", "x")]).texte
+
+
+def test_openai_verrouille_et_choix_du_modele(monkeypatch):
+    monkeypatch.delenv("SIE_LLM_EXTERNE_AUTORISE", raising=False)
+    with pytest.raises(ErreurAutorisation):
+        OpenAIRedacteur(client=object())
+    monkeypatch.setenv("SIE_LLM_EXTERNE_AUTORISE", "oui")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    assert redacteur("openai:gpt-6.2-astra").nom == "openai:gpt-6.2-astra"
+    assert redacteur("openai").nom == "openai:gpt-6.2-sol"
+    assert redacteur("aucun").nom == "aucun"
+
+
+def test_periode_indexee(tmp_path, modele_archives):
+    from rag_sie.config import periode
+    assert periode("2022-2026") == (2022, 2026) and periode("") is None and periode("2024") == (2024, 2024)
+    archives = tmp_path / "archives"
+    shutil.copytree(modele_archives, archives)
+    cfg = ConfigRAG(donnees=tmp_path / "donnees", archives=str(archives), droits="fichier", annees=(2022, 2026))
+    m = Moteur(cfg, encodeur=EncodeurHachage(), redacteur=AucunRedacteur())
+    try:
+        assert m.indexeur.synchroniser().statut == "termine"
+        annees = {b.annee for b in m.recherche.chercher("installation électrique", Filtre(), k=30)}
+        assert annees and all(2022 <= a <= 2026 for a in annees)
+    finally:
+        m.fermer()
+
+
+def test_comparaison_a_l_aveugle(moteur, tmp_path):
+    from rag_sie.comparaison import comparer, ecrire
+
+    class Autre(FauxRedacteur):
+        nom = "autre"
+    sections = [DemandeSection("Continuité du SSI en site occupé", exigences=["résidents"]),
+                DemandeSection("Colonnes montantes et coordination Enedis")]
+    res = comparer(sections, moteur.recherche, [FauxRedacteur(), Autre()], BE, moteur.journal, BE.login)
+    assert res["moteurs"] == ["faux", "autre"]
+    for ligne in res["sections"]:
+        a, b = ligne["essais"]
+        assert a["passages_envoyes"] == b["passages_envoyes"]                 # mêmes passages pour les deux IA
+        assert {a["lettre"], b["lettre"]} == {"A", "B"}
+    assert res["resume"]["faux"]["cout_total_usd"] == 0.024
+    d = ecrire(res, tmp_path / "cmp")
+    grille = (d / "grille_notation.md").read_text(encoding="utf-8")
+    assert "Brouillon A" in grille and "faux" not in grille                   # anonyme
 
 
 # --- service HTTP ------------------------------------------------------------------------

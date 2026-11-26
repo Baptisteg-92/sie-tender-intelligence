@@ -6,18 +6,21 @@
     python -m rag_sie chercher "gestion des déchets" [--groupes "SIE\\BE"] [-k 8] [--mode hybride]
     python -m rag_sie rediger "Gestion des déchets de chantier" [--exigence "..."] [--objet "..."]
     python -m rag_sie evaluer jeu.json [-k 5]
+    python -m rag_sie comparer sections.json --moteurs openai anthropic [--sortie comparaison]
     python -m rag_sie servir [--hote 0.0.0.0] [--port 8600]
 
-Réglages : variables SIE_RAG_* (voir rag_sie/config.py et README).
+Réglages : variables SIE_RAG_* (voir rag_sie/config.py et README), ou fichier « CLÉ=valeur » désigné par
+--config ou par la variable SIE_RAG_CONFIG (sur le serveur : D:\\SIE\\rag\\configuration.env).
 """
 from __future__ import annotations
 
 import argparse
 import getpass
 import json
+import os
 import sys
 
-from .config import ConfigRAG
+from .config import ConfigRAG, charger_fichier
 from .droits import Utilisateur
 from .entrepot import Filtre
 from .moteur import Moteur
@@ -29,6 +32,7 @@ def _utilisateur(args) -> Utilisateur:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="rag_sie", description="RAG sur les archives SIE")
+    ap.add_argument("--config", help="fichier de configuration CLÉ=valeur")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("synchroniser", help="mettre l'index à jour depuis le partage")
     s.add_argument("--archives")
@@ -51,11 +55,20 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("evaluer")
     e.add_argument("jeu")
     e.add_argument("-k", type=int, default=5)
+    cp = sub.add_parser("comparer", help="mêmes sections, mêmes passages, deux IA de rédaction (notation à l'aveugle)")
+    cp.add_argument("sections")
+    cp.add_argument("--moteurs", nargs="+", default=["openai", "anthropic"])
+    cp.add_argument("--sortie", default="comparaison")
+    cp.add_argument("--utilisateur")
+    cp.add_argument("--groupes", help="groupes AD séparés par « ; »")
     v = sub.add_parser("servir")
     v.add_argument("--hote", default="127.0.0.1")
     v.add_argument("--port", type=int, default=8600)
     args = ap.parse_args(argv)
 
+    fichier = args.config or os.environ.get("SIE_RAG_CONFIG")
+    if fichier:
+        charger_fichier(fichier)
     cfg = ConfigRAG.depuis_env(archives=getattr(args, "archives", None))
     m = Moteur(cfg)
     if args.cmd == "synchroniser":
@@ -87,6 +100,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "evaluer":
         from .evaluation import charger_jeu, evaluer, tableau
         print(tableau(evaluer(m.recherche, charger_jeu(args.jeu), k=args.k)))
+        return 0
+    if args.cmd == "comparer":
+        from .comparaison import charger_sections, comparer, ecrire
+        u = _utilisateur(args)
+        res = comparer(charger_sections(args.sections), m.recherche, args.moteurs, u, m.journal, u.login)
+        print(f"Résultats dans {ecrire(res, args.sortie)}")
+        print(json.dumps(res["resume"], ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "servir":
         import uvicorn
