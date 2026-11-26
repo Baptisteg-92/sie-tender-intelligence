@@ -26,7 +26,7 @@ from pathlib import Path
 from .entrepot import BlocTrouve, Filtre
 from .recherche import Contexte, Recherche
 from .redacteurs import Passage, Redacteur
-from .texte import normaliser
+from .texte import nombres_absents, normaliser
 
 MAX_PASSAGES = 8
 MAX_CARACTERES = 24_000
@@ -41,6 +41,8 @@ Tu disposes de passages d'anciens mémoires de SIE. Règles impératives :
   À chaque endroit où une donnée propre à cette affaire est nécessaire, écris [À COMPLÉTER : ce qu'il faut préciser].
 - Réponds point par point aux exigences de l'acheteur listées dans la demande ; si les passages ne permettent pas
   d'en traiter une, écris [À COMPLÉTER : exigence non couverte par les archives] à sa place.
+- Ne fais aucun calcul (somme, durée, date, pourcentage) : recopie les nombres tels qu'ils sont écrits ; si un calcul
+  serait utile, écris [À COMPLÉTER : calcul à faire par le bureau d'études].
 - Style de SIE : phrases simples, factuelles, à la première personne du pluriel (« nous »), sans superlatifs
   ni formules publicitaires.
 - Écris directement le texte de la section, en français, sans introduction ni commentaire sur ta démarche."""
@@ -183,6 +185,10 @@ def rediger(d: DemandeSection, recherche: Recherche, redacteur: Redacteur, filtr
     br.texte = rep.texte
     br.citations = verifier(rep.citations, passages, envoyes)
     br.a_completer = len(re.findall(r"\[À COMPLÉTER", br.texte, re.I))
+    absents = nombres_absents(br.texte, [p.texte for p in passages] + [_question(d)])
+    if absents:
+        br.avertissements.append(f"Nombre(s) absent(s) des archives et de la demande, peut-être calculé(s) ou inventé(s) : "
+                                 f"{', '.join(absents[:10])}. À vérifier.")
     non_verifiees = sum(1 for c in br.citations if not c.verifiee)
     if not br.citations:
         br.avertissements.append("Le brouillon ne cite aucun passage : à relire avec une attention particulière.")

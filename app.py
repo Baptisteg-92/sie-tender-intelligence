@@ -40,7 +40,7 @@ from sie_tender.impression import fiche_pdf, registre_pdf
 from sie_tender.ingestion import importer_dce
 from sie_tender.llm import client, externe_autorise, moteurs_disponibles
 from sie_tender.models import (DESTINATIONS_ALERTE, STATUTS_ALERTE, STATUTS_DEMANDE, Alerte, Champ, ImportMetre, LigneQuantite,
-                               Lot, PieceReponse, Statut, StatutSection)
+                               Lot, PieceReponse, Statut, StatutSection, TypePiece)
 from sie_tender.pipeline import analyser_affaire
 from sie_tender.referentiels import ROLES, SPECIALITES, Contact, Fournisseur, PersonneVisite, Referentiels, Utilisateur, email_valide
 from sie_tender.suivi import (OUVERTS, avancement, initialiser_registre, points_memoire, revalide, signaler_modification,
@@ -631,11 +631,24 @@ def page_chargement() -> None:
     if not deposes:
         st.caption("Aucun fichier déposé.")
     else:
-        st.dataframe(pd.DataFrame([{"Fichier": n, "Type": lus[n].type.value if n in lus else "(non analysé)",
-                                    "Lot": (lus[n].lot or "commun") if n in lus else "", "Pages": lus[n].nb_pages if n in lus else None,
-                                    "Lu": ("oui" if lus[n].lisible else "non (plan)") if n in lus else "",
-                                    "Remarque": (lus[n].remarque or "") if n in lus else ""} for n in deposes]),
-                     hide_index=True, width="stretch")
+        METHODES = {"regle": "règles", "llm": "IA", "saisie": "corrigé à la main"}
+        tableau = pd.DataFrame([{"Fichier": n, "Type": lus[n].type.value if n in lus else "AUTRE",
+                                 "Classé par": METHODES.get(lus[n].type_methode, "") if n in lus else "(non analysé)",
+                                 "Lot": (lus[n].lot or "commun") if n in lus else "", "Pages": lus[n].nb_pages if n in lus else None,
+                                 "Lu": ("oui" if lus[n].lisible else "non (plan)") if n in lus else "",
+                                 "Remarque": (lus[n].remarque or "") if n in lus else ""} for n in deposes])
+        edite = st.data_editor(tableau, hide_index=True, width="stretch", key=f"types_{a.id}",
+                               disabled=[col for col in tableau.columns if col != "Type"],
+                               column_config={"Type": st.column_config.SelectboxColumn("Type", options=[t.value for t in TypePiece],
+                                                                                       help="Corriger le type si le classement est faux")})
+        changes = {r["Fichier"]: r["Type"] for _, r in edite.iterrows()
+                   if r["Fichier"] in lus and r["Type"] != lus[r["Fichier"]].type.value}
+        if changes:
+            for fichier, t in changes.items():
+                a.c.types_manuels[fichier] = t
+                lus[fichier].type, lus[fichier].type_methode = TypePiece(t), "saisie"
+            a.sauver()
+            st.info("Type corrigé et gardé pour les prochaines analyses. Relance l'analyse pour mettre à jour la fiche et les exigences.")
     nouveaux = [n for n in deposes if n not in lus]
     if nouveaux or st.session_state.pop("reanalyser", False):
         st.warning(f"{len(nouveaux)} fichier(s) pas encore analysé(s). Relancer l'analyse remplace la fiche, les lots et les exigences "
@@ -774,13 +787,30 @@ def page_fiche() -> None:
                 libelle, _, extrait = al.partition(" : « ")
                 st.markdown(f"**{libelle}**")
                 st.markdown(f'<div class="sie-citation">« {extrait}</div>', unsafe_allow_html=True)
-    if a_verif and moteur_choisi() != "aucun":
-        with st.expander(f"Compléter les {a_verif} champs à vérifier avec l'IA", icon=":material/auto_awesome:"):
+    corriges = {k: ch for k, ch in f.champs().items() if ch.methode == "llm_correction" and ch.valeur_avant}
+    if corriges:
+        with st.expander(f"Corrections proposées par l'IA, à valider ({len(corriges)})", icon=":material/rule:", expanded=True):
+            for k, ch in corriges.items():
+                st.markdown(f"**{k}** : « {ch.valeur_avant} » → « {ch.valeur} »  \n"
+                            f"<span style='color:#666'>{ch.source.fichier} p.{ch.source.page} : « {ch.source.extrait} »</span>",
+                            unsafe_allow_html=True)
+                b1, b2 = st.columns(2)
+                if b1.button("Garder la correction", key=f"ok_{k}"):
+                    setattr(f, k, ch.model_copy(update={"statut": Statut.VALIDE, "valeur_avant": None}))
+                    a.sauver(); st.rerun()
+                if b2.button("Revenir à l'ancienne valeur", key=f"non_{k}"):
+                    setattr(f, k, ch.model_copy(update={"valeur": ch.valeur_avant, "valeur_avant": None, "statut": Statut.CORRIGE,
+                                                        "methode": "saisie"}))
+                    a.sauver(); st.rerun()
+    if moteur_choisi() != "aucun":
+        with st.expander("Faire relire la fiche par l'IA (compléter et corriger)", icon=":material/auto_awesome:"):
+            st.caption("L'IA relit tous les champs non validés dans le RC, l'AE et le CCAP. Chaque ajout ou correction cite "
+                       "la phrase qui le justifie ; une correction garde l'ancienne valeur et attend ta validation. Aucun calcul.")
             moteur = moteur_pour(a)
-            if moteur and st.button("Lancer", key="ia_fiche"):
-                from sie_tender.f1_fiche import _completer_llm
-                with st.spinner("L'IA cherche les champs manquants…"):
-                    _completer_llm(c.fiche, pieces_texte(a), moteur, c.journal)
+            if moteur and st.button("Lancer la relecture", key="ia_fiche"):
+                from sie_tender.f1_fiche import _relire_llm
+                with st.spinner("L'IA relit la fiche…"):
+                    _relire_llm(c.fiche, pieces_texte(a), moteur, c.journal)
                 a.sauver()
                 st.rerun()
     with st.expander("Historique des décisions et validations", icon=":material/history:"):

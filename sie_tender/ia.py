@@ -13,7 +13,7 @@ from rank_bm25 import BM25Okapi
 from .f6_archives import jetons
 from .llm import ClientLLM, PageDoc, Reponse
 from .models import CitationIA, Consultation, Piece, ReponseIA, SectionMemoire, TypePiece
-from .texte import normaliser
+from .texte import nombres_absents, normaliser
 
 _PRIORITE = {TypePiece.RC: 0, TypePiece.AE: 1, TypePiece.CCAP: 2, TypePiece.CCTP: 3, TypePiece.ANNEXE: 4}
 
@@ -22,6 +22,8 @@ Règles impératives :
 - Appuie-toi uniquement sur les documents fournis. N'invente aucune date, aucun montant, aucun nom, aucune référence.
 - Si l'information n'y figure pas, écris « non trouvé dans le DCE ».
 - La décision GO / NO GO, les prix et les marges appartiennent à SIE : ne les propose pas.
+- Ne fais aucun calcul (somme, durée, date déduite, conversion, pourcentage) : recopie les nombres tels qu'ils sont
+  écrits dans les documents. Si un calcul serait utile, écris [CALCUL À FAIRE PAR L'OUTIL : ce qu'il faut calculer].
 - Réponds en français, de façon sobre et factuelle, sans superlatifs."""
 
 
@@ -63,11 +65,19 @@ def verifier(citations, pieces: list[Piece]) -> list[CitationIA]:
     return out
 
 
+def avertissements_nombres(texte: str, sources: list[str]) -> list[str]:
+    absents = nombres_absents(texte, sources)
+    if not absents:
+        return []
+    return [f"Nombre(s) absent(s) des documents, peut-être calculé(s) ou inventé(s) par l'IA : {', '.join(absents[:10])}. À vérifier."]
+
+
 def _reponse(type_: str, question: str, rep: Reponse, moteur: ClientLLM, pieces: list[Piece]) -> ReponseIA:
     if rep.erreur:
         raise RuntimeError(rep.erreur)
+    sources = [pg.texte for p in pieces for pg in p.pages]
     return ReponseIA(type=type_, question=question, texte=rep.texte, citations=verifier(rep.citations, pieces),
-                     moteur=moteur.nom, cout_usd=round(rep.cout_usd, 4))
+                     moteur=moteur.nom, cout_usd=round(rep.cout_usd, 4), avertissements=avertissements_nombres(rep.texte, sources))
 
 
 def _exiger(moteur: ClientLLM) -> None:
@@ -124,7 +134,8 @@ def brouillon_section(c: Consultation, section: SectionMemoire, moteur: ClientLL
     rep = moteur.texte(CONSIGNE_MEMOIRE, "\n".join(contenu))
     if rep.erreur:
         raise RuntimeError(rep.erreur)
+    sources = [pg.texte for p in c.pieces for pg in p.pages] + [pa.texte for pa in passages] + [section.contenu or ""]
     return ReponseIA(type="memoire", question=f"Brouillon : {section.titre}", texte=rep.texte, moteur=moteur.nom,
-                     cout_usd=round(rep.cout_usd, 4),
+                     cout_usd=round(rep.cout_usd, 4), avertissements=avertissements_nombres(rep.texte, sources),
                      citations=[CitationIA(fichier=f"archives/{pa.affaire}", page=pa.source.page, extrait=pa.texte[:200], verifiee=True)
                                 for pa in passages])

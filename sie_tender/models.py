@@ -50,7 +50,8 @@ class Champ(BaseModel):
     valeur: Optional[str] = None
     source: Optional[Source] = None
     statut: Statut = Statut.A_VERIFIER
-    methode: str = "regle"  # regle | llm | saisie
+    methode: str = "regle"  # regle | llm | llm_correction | saisie
+    valeur_avant: Optional[str] = None  # valeur remplacée par la relecture de l'IA (à valider par SIE)
 
     @classmethod
     def absent(cls) -> "Champ":
@@ -67,6 +68,7 @@ class Piece(BaseModel):
     id: str = Field(default_factory=lambda: nouvel_id("P"))
     fichier: str
     type: TypePiece = TypePiece.AUTRE
+    type_methode: str = "regle"  # regle | llm | saisie
     lot: Optional[str] = None  # numéro de lot, None = pièce commune
     nb_pages: int = 0
     pages: list[Page] = Field(default_factory=list, exclude=True)
@@ -378,6 +380,7 @@ class ReponseIA(BaseModel):
     moteur: str
     date: datetime = Field(default_factory=datetime.now)
     cout_usd: float = 0.0
+    avertissements: list[str] = Field(default_factory=list)
 
 
 class ReferenceProposee(BaseModel):
@@ -395,6 +398,7 @@ class Consultation(BaseModel):
     id: str = Field(default_factory=lambda: nouvel_id("AFF"))
     dossier: str
     date_analyse: datetime = Field(default_factory=datetime.now)
+    types_manuels: dict[str, str] = Field(default_factory=dict)  # fichier -> type corrigé à la main, gardé à chaque réanalyse
     pieces: list[Piece] = Field(default_factory=list)
     fiche: FicheRenseignement = Field(default_factory=FicheRenseignement)
     lots: list[Lot] = Field(default_factory=list)

@@ -39,3 +39,25 @@ def jetons(texte: str) -> list[str]:
                 break
         out.append(m)
     return out
+
+
+_NOMBRE = re.compile(r"(?<![\w.,])\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d+)?(?![\w])")
+
+
+def _forme(n: str) -> str:
+    return re.sub(r"[ \u00a0\u202f]", "", n).replace(",", ".")
+
+
+def nombres_absents(texte: str, sources: list[str]) -> list[str]:
+    """Nombres écrits par l'IA qu'on ne retrouve dans aucune source : signe d'un calcul ou d'une invention.
+
+    Les numéros de 1 à 9 isolés (listes, « 2 lots ») et les références de type [3] sont tolérés."""
+    vus = {_forme(n) for src in sources for n in _NOMBRE.findall(src or "")}
+    texte = re.sub(r"\[\d+\]", " ", texte)
+    out = []
+    for n in _NOMBRE.findall(texte):
+        f = _forme(n)
+        if f in vus or (f.isdigit() and int(f) < 10) or f in out:
+            continue
+        out.append(f)
+    return out

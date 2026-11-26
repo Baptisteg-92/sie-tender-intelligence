@@ -11,18 +11,45 @@ from .f6_archives import (Bibliotheque, cadre_reponse, construire_trame, context
                           references_similaires)
 from .ingestion import importer_dce
 from .llm import ClientLLM, client_depuis_env
-from .models import Consultation
+from .models import Consultation, Piece, TypePiece
+from .llm import AucunLLM
+
+
+CONSIGNE_CLASSEMENT = """Tu classes une pièce d'un dossier de consultation (marché public de travaux).
+Types possibles : RC (règlement de la consultation), CCAP (clauses administratives), CCTP (clauses techniques),
+AE (acte d'engagement), DPGF (décomposition du prix global et forfaitaire), BPU (bordereau des prix unitaires),
+PLAN, ANNEXE, AUTRE. Réponds par {"type": "...", "extrait": "phrase de la page qui justifie, recopiée mot pour mot"}.
+Dans le doute, réponds AUTRE."""
+
+
+def classer_avec_ia(pieces: list[Piece], llm: ClientLLM, journal: list[str]) -> None:
+    """Règles d'abord ; l'IA seulement pour les pièces lisibles restées « AUTRE ». On n'envoie que le nom et le début."""
+    if isinstance(llm, AucunLLM):
+        return
+    for p in pieces:
+        if p.type != TypePiece.AUTRE or not p.lisible or p.type_methode == "saisie" or not p.pages:
+            continue
+        debut = "\n".join(pg.texte for pg in p.pages[:2])[:3000]
+        rep = llm.json(CONSIGNE_CLASSEMENT, f"Nom du fichier : {p.fichier}\n\nDébut du document :\n{debut}")
+        t = str((rep or {}).get("type", "")).upper().strip()
+        if t in TypePiece.__members__ and t != "AUTRE":
+            p.type, p.type_methode = TypePiece[t], "llm"
+            journal.append(f"Import : {p.fichier} classé {t} par l'IA (les règles n'avaient pas reconnu la pièce).")
 
 
 def analyser_dce(dce: str | Path, bibliotheque: Bibliotheque | None = None, llm: ClientLLM | None = None,
-                 aujourdhui: date | None = None) -> Consultation:
+                 aujourdhui: date | None = None, types_manuels: dict[str, str] | None = None) -> Consultation:
     llm = llm or client_depuis_env()
     c = Consultation(dossier=str(dce))
     c.journal.append(f"Analyse avec LLM : {llm.nom}.")
     c.pieces = importer_dce(dce)
+    c.types_manuels = dict(types_manuels or {})
     for p in c.pieces:
         if p.remarque:
             c.journal.append(f"Import : {p.fichier} : {p.remarque}")
+        if p.fichier in c.types_manuels and c.types_manuels[p.fichier] in TypePiece.__members__:
+            p.type, p.type_methode = TypePiece[c.types_manuels[p.fichier]], "saisie"
+    classer_avec_ia(c.pieces, llm, c.journal)
 
     c.fiche, c.lots = construire_fiche(c.pieces, llm, c.journal)
     activites_des_lots(c.lots, c.pieces, c.fiche.objet.valeur)
@@ -51,7 +78,7 @@ def analyser_dce(dce: str | Path, bibliotheque: Bibliotheque | None = None, llm:
 
 def analyser_affaire(affaire, bibliotheque: Bibliotheque | None = None, llm: ClientLLM | None = None) -> None:
     """Analyse le DCE déposé dans une affaire en gardant son identifiant et le travail du groupe 2."""
-    r = analyser_dce(affaire.dossier("dce"), bibliotheque, llm)
+    r = analyser_dce(affaire.dossier("dce"), bibliotheque, llm, types_manuels=affaire.c.types_manuels)
     c = affaire.c
     for champ in ("pieces", "fiche", "lots", "exigences", "criteres", "pieces_a_fournir", "trame_memoire", "cadre_reponse", "references"):
         setattr(c, champ, getattr(r, champ))
