@@ -27,6 +27,20 @@ _INDICES_TYPE: list[tuple[TypePiece, list[str]]] = [
 _LOT = re.compile(r"\blot\s*(?:n\s*[°o]?\s*)?(\d{1,2})\b", re.IGNORECASE)
 
 
+def indices_type(nom_fichier: str, premiere_page: str = "") -> tuple[TypePiece | None, TypePiece | None]:
+    """Type suggéré par le nom du fichier, et type suggéré par la page de garde (None si rien trouvé)."""
+    nom = normaliser(Path(nom_fichier).stem.replace("_", " ").replace("-", " "))
+    par_nom = next((t for t, motifs in _INDICES_TYPE if any(re.search(m, nom) for m in motifs)), None)
+    debut = normaliser(premiere_page[:1500])
+    meilleur: tuple[int, TypePiece] | None = None
+    for t, motifs in _INDICES_TYPE:
+        for m in motifs[1:]:
+            r = re.search(m, debut)
+            if r and (meilleur is None or r.start() < meilleur[0]):
+                meilleur = (r.start(), t)
+    return par_nom, (meilleur[1] if meilleur else None)
+
+
 def type_de_piece(nom_fichier: str, premiere_page: str = "") -> TypePiece:
     nom = normaliser(Path(nom_fichier).stem.replace("_", " ").replace("-", " "))
     for t, motifs in _INDICES_TYPE:

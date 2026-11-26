@@ -46,13 +46,15 @@ def test_relecture_corrige_complete_et_respecte_sie():
 
 
 def test_classement_ia_seulement_pour_autre():
-    p = Piece(fichier="Piece_3.pdf", type=TypePiece.AUTRE, pages=[Page(numero=1, texte="Cahier des clauses techniques particulières, lot 2")])
+    p = Piece(fichier="Piece_3.pdf", type=TypePiece.ANNEXE, pages=[Page(numero=1, texte="Document de travail, lot 2")])
+    conflit = Piece(fichier="RC_v2.pdf", type=TypePiece.RC, pages=[Page(numero=1, texte="Cahier des clauses administratives particulières")])
     manuel = Piece(fichier="x.pdf", type=TypePiece.AUTRE, type_methode="saisie", pages=[Page(numero=1, texte="texte")])
     llm = FauxLLM({"type": "CCTP"})
     journal = []
-    classer_avec_ia([RC, p, manuel], llm, journal)
+    classer_avec_ia([RC, p, manuel, conflit], llm, journal)
     assert p.type == TypePiece.CCTP and p.type_methode == "llm"
-    assert manuel.type == TypePiece.AUTRE and len(llm.recu) == 1                     # RC et choix manuel non envoyés
+    assert manuel.type == TypePiece.AUTRE and len(llm.recu) == 2                     # RC sûr et choix manuel non envoyés
+    assert any("désaccord" in j for j in journal)
 
 
 def test_nombres_absents():
