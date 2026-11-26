@@ -323,9 +323,13 @@ def deposer_dce(a: Affaire, fichiers: list[tuple[str, bytes]]) -> int:
 
 
 def analyser(a: Affaire) -> None:
-    with st.status("Analyse du DCE…", expanded=False) as s:
-        s.write("Lecture des pièces, fiche, exigences, critères, recherche dans les archives")
-        analyser_affaire(a, biblio())
+    with st.status("Analyse du DCE…", expanded=True) as s:
+        barre = st.progress(0, text="Préparation")
+
+        def avancement(f: float, message: str) -> None:
+            barre.progress(int(f * 100), text=f"{int(f * 100)} % · {message}")
+
+        analyser_affaire(a, biblio(), avancement=avancement)
         initialiser_registre(a.c)
         synchroniser_pieces(a.c)
         a.sauver()

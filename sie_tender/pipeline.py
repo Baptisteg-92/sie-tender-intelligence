@@ -56,21 +56,30 @@ def classer_avec_ia(pieces: list[Piece], llm: ClientLLM, journal: list[str]) -> 
 
 
 def analyser_dce(dce: str | Path, bibliotheque: Bibliotheque | None = None, llm: ClientLLM | None = None,
-                 aujourdhui: date | None = None, types_manuels: dict[str, str] | None = None) -> Consultation:
+                 aujourdhui: date | None = None, types_manuels: dict[str, str] | None = None,
+                 avancement=None) -> Consultation:
+    """avancement(fraction, message), facultatif : progression de 0 à 1 pour l'interface (la lecture compte pour 70 %)."""
+    def etape(f: float, m: str) -> None:
+        if avancement:
+            avancement(min(max(f, 0.0), 1.0), m)
+
     llm = llm or client_depuis_env()
     c = Consultation(dossier=str(dce))
     c.journal.append(f"Analyse avec LLM : {llm.nom}.")
-    c.pieces = importer_dce(dce)
+    c.pieces = importer_dce(dce, lambda f, m: etape(0.7 * f, m))
     c.types_manuels = dict(types_manuels or {})
     for p in c.pieces:
         if p.remarque:
             c.journal.append(f"Import : {p.fichier} : {p.remarque}")
         if p.fichier in c.types_manuels and c.types_manuels[p.fichier] in TypePiece.__members__:
             p.type, p.type_methode = TypePiece[c.types_manuels[p.fichier]], "saisie"
+    etape(0.72, "Classement des pièces douteuses")
     classer_avec_ia(c.pieces, llm, c.journal)
+    etape(0.78, "Fiche de renseignement")
 
     c.fiche, c.lots = construire_fiche(c.pieces, llm, c.journal)
     activites_des_lots(c.lots, c.pieces, c.fiche.objet.valeur)
+    etape(0.86, "Exigences, critères et pièces à fournir")
     c.exigences = extraire_exigences(c.pieces)
     c.criteres = extraire_criteres(c.pieces)
     if not c.criteres:
@@ -86,17 +95,21 @@ def analyser_dce(dce: str | Path, bibliotheque: Bibliotheque | None = None, llm:
         pages_cadre = {(ch.source.fichier, ch.source.page) for ch in cadre}
         c.exigences = [e for e in c.exigences if (e.source.fichier, e.source.page) not in pages_cadre
                        or e.categorie.value in ("eliminatoire", "RSE")]
+    etape(0.93, "Trame du mémoire et recherche dans les archives")
     contexte = contexte_affaire(c.fiche.objet.valeur, c.lots)
     c.trame_memoire = construire_trame(c.criteres, bibliotheque, contexte, c.journal, cadre)
     c.references = references_similaires(bibliotheque, contexte)
     if bibliotheque is None:
         c.journal.append("F6 : pas de bibliothèque d'archives fournie, trame sans passages proposés.")
+    etape(1.0, "Analyse terminée")
     return c
 
 
-def analyser_affaire(affaire, bibliotheque: Bibliotheque | None = None, llm: ClientLLM | None = None) -> None:
+def analyser_affaire(affaire, bibliotheque: Bibliotheque | None = None, llm: ClientLLM | None = None,
+                     avancement=None) -> None:
     """Analyse le DCE déposé dans une affaire en gardant son identifiant et le travail du groupe 2."""
-    r = analyser_dce(affaire.dossier("dce"), bibliotheque, llm, types_manuels=affaire.c.types_manuels)
+    r = analyser_dce(affaire.dossier("dce"), bibliotheque, llm, types_manuels=affaire.c.types_manuels,
+                     avancement=avancement)
     c = affaire.c
     for champ in ("pieces", "fiche", "lots", "exigences", "criteres", "pieces_a_fournir", "trame_memoire", "cadre_reponse", "references"):
         setattr(c, champ, getattr(r, champ))
