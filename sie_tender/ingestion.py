@@ -114,17 +114,21 @@ def lire_fichier(chemin: Path) -> Piece:
         piece.remarque = "Plan stocké sans lecture (métrés faits par le bureau d'études)."
         piece.lot = lot_de_piece(chemin.name, piece.type)
         return piece
-    if ext == ".pdf":
-        piece.pages, piece.remarque = _lire_pdf(chemin)
-    elif ext == ".docx":
-        piece.pages = _lire_docx(chemin)
-    elif ext in (".xlsx", ".xlsm"):
-        piece.pages = _lire_xlsx(chemin)
-    elif ext in (".txt", ".md"):
-        piece.pages = [Page(numero=1, texte=nettoyer(chemin.read_text(encoding="utf-8", errors="replace")))]
-    else:
-        piece.lisible = False
-        piece.remarque = f"Format {ext or 'inconnu'} non lu."
+    try:
+        if ext == ".pdf":
+            piece.pages, piece.remarque = _lire_pdf(chemin)
+        elif ext == ".docx":
+            piece.pages = _lire_docx(chemin)
+        elif ext in (".xlsx", ".xlsm"):
+            piece.pages = _lire_xlsx(chemin)
+        elif ext in (".txt", ".md"):
+            piece.pages = [Page(numero=1, texte=nettoyer(chemin.read_text(encoding="utf-8", errors="replace")))]
+        else:
+            piece.lisible = False
+            piece.remarque = f"Format {ext or 'inconnu'} non lu."
+    except Exception as e:  # fichier endommagé, protégé par mot de passe, mal nommé... : on continue avec les autres
+        piece.pages, piece.lisible = [], False
+        piece.remarque = f"Fichier illisible ({type(e).__name__}) : endommagé ou protégé par mot de passe, à ouvrir à la main."
     piece.nb_pages = len(piece.pages)
     premiere = piece.pages[0].texte if piece.pages else ""
     piece.type = type_de_piece(chemin.name, premiere)

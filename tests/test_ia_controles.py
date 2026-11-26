@@ -82,3 +82,12 @@ def test_brouillon_passe_par_le_service_rag():
     r = ia.brouillon_section(c, SectionMemoire(titre="Gestion des déchets", ponderation=20), FauxLLM({}), rag=rag)
     assert r.moteur == "rag:openai:gpt-6.2-sol" and r.citations[0].verifiee and r.avertissements
     assert rag.demande["titre"] == "Gestion des déchets" and rag.demande["ponderation"] == 20
+
+
+def test_pdf_endommage_ne_bloque_pas_l_import(tmp_path):
+    from sie_tender.ingestion import importer_dce
+    (tmp_path / "RC.txt").write_text("Règlement de la consultation\nRéférence : X-1", encoding="utf-8")
+    (tmp_path / "CCTP_lot01.pdf").write_bytes(b"pas un vrai pdf")
+    pieces = {p.fichier: p for p in importer_dce(tmp_path)}
+    assert pieces["RC.txt"].lisible
+    assert not pieces["CCTP_lot01.pdf"].lisible and "illisible" in pieces["CCTP_lot01.pdf"].remarque
