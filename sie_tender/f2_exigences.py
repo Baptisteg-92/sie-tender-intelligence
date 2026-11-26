@@ -137,11 +137,65 @@ _LIGNE_CRITERE = re.compile(
 )
 
 
+_TETE_CRITERE = re.compile(r"^\s*(?P<num>\d{1,2}(?:\.\d{1,2})?)\.?\s+(?:sous[\s-]*)?crit[eè]re\b(?:\s*n?[°o]?\s*\d{1,2})?\s*:?\s*(?P<reste>.*)$", I)
+_POND_SEULE = re.compile(r"^\s*(?P<pond>\d{1,3}(?:[,.]\d{1,2})?)\s*%\s*$")
+_POND_FIN = re.compile(r"\s*(?P<pond>\d{1,3}(?:[,.]\d{1,2})?)\s*%\s*$")
+
+
+def _criteres_tableau(p: Piece) -> list[Critere]:
+    """Tableau « 1. Critère 1 : Technique 50% / 1.1 Sous-critère / intitulé sur 1-3 lignes / 15% », sur plusieurs pages."""
+    lignes, ou = [], []  # ou[i] = (page, position de la ligne dans la page)
+    for page in p.pages:
+        pos = 0
+        for l in page.texte.split("\n"):
+            lignes.append(l)
+            ou.append((page, pos))
+            pos += len(l) + 1
+    criteres: list[Critere] = []
+    i = 0
+    while i < len(lignes):
+        m = _TETE_CRITERE.match(lignes[i])
+        if not m:
+            i += 1
+            continue
+        titre, pond = m.group("reste").strip(), None
+        f = _POND_FIN.search(titre)
+        if f:
+            pond, titre = f.group("pond"), titre[:f.start()].strip()
+        j = i + 1
+        while j < len(lignes) and not _TETE_CRITERE.match(lignes[j]):
+            ligne = lignes[j].strip()
+            ps = _POND_SEULE.match(ligne)
+            if ps:
+                pond = pond or ps.group("pond")
+                j += 1
+                break
+            if not titre or (ligne[:1].islower() and len(titre) < 200):  # intitulé sur plusieurs lignes
+                f = _POND_FIN.search(ligne)
+                if f:
+                    pond, ligne = pond or f.group("pond"), ligne[:f.start()]
+                titre = f"{titre} {ligne}".strip()
+            j += 1
+        if pond and titre:
+            page, debut = ou[i]
+            c = Critere(intitule=re.sub(r"\s+", " ", titre).strip(" .:-–"), ponderation=float(pond.replace(",", ".")),
+                        source=source(p, page.numero, page.texte, debut, debut + len(lignes[i])))
+            if "." in m.group("num") and criteres:
+                criteres[-1].sous_criteres.append(c)
+            else:
+                criteres.append(c)
+        i = j if j > i + 1 else i + 1
+    return criteres if len(criteres) >= 2 else []
+
+
 def extraire_criteres(pieces: list[Piece]) -> list[Critere]:
     criteres: list[Critere] = []
     for p in pieces:
         if p.type != TypePiece.RC or not p.lisible:
             continue
+        criteres = _criteres_tableau(p)
+        if criteres:
+            break
         for page in p.pages:
             n = normaliser(page.texte)
             if not re.search(r"criteres?|jugement des offres|attribution|notation", n):
